@@ -31,6 +31,14 @@ builder.Services.AddControllers().AddOData(options =>
 
 var app = builder.Build();
 
+// Buffer the body so navigation bindings can be read back after model binding consumed it - see
+// NavigationBinding for why they must not go through Delta.
+app.Use(async (context, next) =>
+{
+    context.Request.EnableBuffering();
+    await next();
+});
+
 app.UseODataBatching();
 app.UseRouting();
 app.MapControllers();

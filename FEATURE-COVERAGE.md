@@ -175,6 +175,8 @@ Everything below was executed against the running service.
 | `$ref` on a single-valued navigation property  | 200 / 204 |
 | Deep insert (`POST` with nested entities)      | 201, children addressable in their own set |
 | Delta payload (`PATCH` on the collection)      | 200, update + removal + upsert applied |
+| `@odata.bind` / `{"@id"}` on create and update | 201 / 204, link re-pointed, store intact |
+| binding to `null`                              | 204, link cleared |
 
 ### Media entity streams
 
@@ -203,6 +205,37 @@ parent's navigation property, but nothing registers them anywhere else. Left at 
 reachable through `Members(3)/Loans` while carrying an all-zero key and being absent from `/Loans` - an
 inconsistent state, not a partial one, and the request still answers 201. The controller therefore assigns
 keys and registers nested entities in their own sets explicitly.
+
+### Binding an existing entity: `@odata.bind` and `{"@id": …}`
+
+Both notations work, on create and on update, and binding to `null` clears the link:
+
+```json
+"Location@odata.bind": "…/Branches(2)"      // OData 4.0
+"Location": { "@id": "…/Branches(2)" }      // OData 4.01
+"Location@odata.bind": null                 // clears the link
+```
+
+Getting there took two detours, and both are worth knowing because neither announces itself.
+
+**Do not route a binding through `Delta<T>`.** The deserializer turns either notation into a *partial
+instance* of the target type carrying only its key, and `Delta.Patch` treats that as a value to patch
+**into the currently linked instance**. Binding a copy to another branch therefore does not re-point the
+reference - it writes the new key into the branch that was linked before. Measured: after one such
+request the store held
+
+```
+2 Central Library | 2 Suburban Branch
+```
+
+two entities with the same key, and the request answered `204`. Nothing looks wrong until the next read.
+The bindings are therefore read from the raw request body and resolved against the store by key, which
+needs `Request.EnableBuffering()` so the body survives model binding.
+
+**A binding on a navigation property backed by a referential constraint is refused outright.**
+`Medium@odata.bind` on a `Copy` - whose `MediumId` is tied to `Medium/Id` by a `ReferentialConstraint` -
+makes the OData deserializer reject the *whole* body with `400`, before any controller code runs. There
+is no way to accept it through `[FromBody]`; that action reads and parses the payload itself.
 
 ### Delta payloads (OData 4.01)
 

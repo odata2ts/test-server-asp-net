@@ -125,8 +125,101 @@ public class CopiesController(LibraryData data) : ODataController
             return NotFound();
         }
 
-        delta.Patch(existing);
+        var boundBranchId = NavigationBinding.Read(Request, nameof(Copy.Location), NavigationBinding.AsInt);
+        var clearsBranch = NavigationBinding.ClearsLink(Request, nameof(Copy.Location));
+
+        // Keep the current link out of Patch's reach: a bound stub would be written into it.
+        var currentLocation = existing.Location;
+        existing.Location = null;
+
+        // A body the deserializer refused - binding a navigation to null is one such case - arrives as a
+        // null delta. The binding itself was read from the raw body, so it can still be applied.
+        delta?.Patch(existing);
+
+        existing.Location = boundBranchId is { } branchId
+            ? data.Branches.FirstOrDefault(b => b.Id == branchId)
+            : clearsBranch ? null : currentLocation;
+
         return Updated(existing);
+    }
+
+    /// <summary>Navigation to the branch the copy is shelved at.</summary>
+    [HttpGet("odata/v4/library/Copies(MediumId={keyMediumId},InventoryNumber={keyInventoryNumber})/Location")]
+    [EnableQuery]
+    public ActionResult<Branch> GetLocation([FromRoute] Guid keyMediumId, [FromRoute] int keyInventoryNumber) =>
+        Find(data, keyMediumId, keyInventoryNumber)?.Location is { } branch ? branch : NotFound();
+
+    /// <summary>
+    /// Creates a copy. Accepts the navigation property either inline (deep insert) or as a reference -
+    /// `Medium@odata.bind` in 4.0, or a nested `{"@id": …}` in 4.01.
+    /// </summary>
+    public async Task<IActionResult> Post()
+    {
+        // Read the whole payload here rather than through `[FromBody] Delta<Copy>`. The OData
+        // deserializer refuses a body that binds a navigation property backed by a referential
+        // constraint - `Medium@odata.bind` on a Copy - and rejects it wholesale with 400. Parsing the
+        // body directly is the only way to accept both binding notations on such a property.
+        var copy = await ReadCopyFromBody();
+        if (copy is null)
+        {
+            return BadRequest("The request body could not be read as a Copy.");
+        }
+
+        if (data.Media.FirstOrDefault(m => m.Id == copy.MediumId) is not { } medium)
+        {
+            return BadRequest("The referenced medium does not exist.");
+        }
+
+        copy.Medium = medium;
+        medium.Copies.Add(copy);
+        data.Copies.Add(copy);
+        return Created(copy);
+    }
+
+    private async Task<Copy?> ReadCopyFromBody()
+    {
+        Request.Body.Position = 0;
+        using var document = await System.Text.Json.JsonDocument.ParseAsync(Request.Body);
+        var root = document.RootElement;
+
+        var copy = new Copy();
+
+        // The medium may arrive as a plain foreign key or through either binding notation.
+        copy.MediumId = NavigationBinding.Read(Request, nameof(Copy.Medium), NavigationBinding.AsGuid)
+            ?? (root.TryGetProperty(nameof(Copy.MediumId), out var fk) && fk.ValueKind == System.Text.Json.JsonValueKind.String
+                && Guid.TryParse(fk.GetString(), out var parsed) ? parsed : Guid.Empty);
+
+        if (copy.MediumId == Guid.Empty)
+        {
+            return null;
+        }
+
+        if (root.TryGetProperty(nameof(Copy.InventoryNumber), out var inventory))
+        {
+            copy.InventoryNumber = inventory.GetInt32();
+        }
+
+        if (root.TryGetProperty(nameof(Copy.Condition), out var condition))
+        {
+            copy.Condition = condition.GetByte();
+        }
+
+        if (root.TryGetProperty(nameof(Copy.IsLoanable), out var loanable))
+        {
+            copy.IsLoanable = loanable.GetBoolean();
+        }
+
+        if (root.TryGetProperty(nameof(Copy.Location_), out var shelf))
+        {
+            copy.Location_ = shelf.GetString();
+        }
+
+        if (NavigationBinding.Read(Request, nameof(Copy.Location), NavigationBinding.AsInt) is { } branchId)
+        {
+            copy.Location = data.Branches.FirstOrDefault(b => b.Id == branchId);
+        }
+
+        return copy;
     }
 
     internal static Copy? Find(LibraryData data, Guid mediumId, int inventoryNumber) =>
@@ -256,7 +349,17 @@ public class MembersController(LibraryData data) : ODataController
             return NotFound();
         }
 
-        delta.Patch(existing);
+        var boundDocumentId = NavigationBinding.Read(Request, nameof(Member.IdDocument), NavigationBinding.AsGuid);
+        var clearsDocument = NavigationBinding.ClearsLink(Request, nameof(Member.IdDocument));
+
+        var currentDocument = existing.IdDocument;
+        existing.IdDocument = null;
+        delta?.Patch(existing);
+
+        existing.IdDocument = boundDocumentId is { } documentId
+            ? data.IdDocuments.FirstOrDefault(d => d.Id == documentId)
+            : clearsDocument ? null : currentDocument;
+
         return Updated(existing);
     }
 
