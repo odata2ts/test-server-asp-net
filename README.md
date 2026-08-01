@@ -25,7 +25,8 @@ the emitted `$metadata`, diffed mechanically against the reference EDMX, and on 
 running service - not on documentation.
 
 Short version: the protocol and operation surface is reproduced completely - all 20 entity types, all 29
-operations including both overload pairs, containment, media entities, open types, `$batch`, `$apply`.
+operations including both overload pairs, containment, media entities, open types, `$batch`, `$apply` and
+the query options in the request body (`POST <resource>/$query`).
 Media entity streams, `$ref`, deep insert and 4.01 delta payloads are all served, and so is the model
 metadata down to `Partner` on both sides of every association, alternate keys and all four vocabulary
 annotations. Two attributes of the reference EDMX have no equivalent in the model builder at all:

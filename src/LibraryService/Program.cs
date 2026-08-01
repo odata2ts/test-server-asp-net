@@ -39,6 +39,11 @@ app.Use(async (context, next) =>
     await next();
 });
 
+// Accept the query options in the request body: POST <resource>/$query with a text/plain body. The
+// middleware rewrites such a request into the equivalent GET before routing, so no controller knows
+// about it - which is exactly why it has to sit in front of UseRouting.
+app.UseODataQueryRequest();
+
 app.UseODataBatching();
 app.UseRouting();
 app.MapControllers();

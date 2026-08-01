@@ -34,7 +34,7 @@ cannot express is two attributes: `TypeDefinition` and `Unicode`.
 | Complex types incl. abstract base        | complete                                                     |
 | Enums incl. flags and non-ASCII members  | complete                                                     |
 | Operations (14 functions, 14 actions)    | complete, both overload pairs survive                        |
-| Query options                            | complete, `$search` only with a hand-written binder           |
+| Query options                            | complete, incl. `$query`; `$search` only with a hand-written binder |
 | Containment, media entities, open types  | complete, streams and `$ref` served in every position         |
 | Navigation properties incl. `Partner`    | complete, both sides related, `OnDelete` intact              |
 | Model metadata detail                    | **2 attributes not expressible**, 6 redundant - see below     |
@@ -124,6 +124,29 @@ type in the payload:
 ```
 
 The flags enum round-trips including the non-ASCII member: `"Amenities": "WheelchairAccessible, Café"`.
+
+### Query options in the request body: `POST <resource>/$query`
+
+A URL carrying a long `$select` or `$filter` runs into the hosting environment's limit on the request
+line - Kestrel's default is 8 KB, and it answers `414` well before the query itself becomes unreasonable.
+OData 4.01 therefore allows the same query to travel in the body: `POST` to the resource with `/$query`
+appended and the query string as `text/plain`.
+
+`UseODataQueryRequest()` implements it, and **where it sits decides whether it works**: the middleware
+rewrites the request into the equivalent GET, so it has to run *before* `UseRouting()` - behind it the
+route for `/$query` does not exist and the request is refused with `405`. Nothing else changes; no
+controller learns that the query arrived in a body.
+
+The body is treated as a query string, which includes percent-decoding: `%24select=Title` is accepted
+exactly like `$select=Title`. That matters for generated clients, which tend to encode the option names
+along with the values.
+
+```
+POST /Media/$query          body: $filter=Language eq 'de'     200, filtered
+POST /Media(<id>)/$query    body: %24select=Title              200, single entity, projected
+GET  /Media?$filter=<8 KB of literals>                         414
+POST /Media/$query          body: the same 8 KB filter         200
+```
 
 ### `Core.OptimisticConcurrency`
 
@@ -234,6 +257,7 @@ Everything below was executed against the running service.
 | Singleton `MainBranch`                         | 200    |
 | `$filter`, `$orderby`, `$top`, `$skip`, `$select`, `$expand`, `$count` | 200 |
 | `$search` (with binder)                        | filters correctly |
+| `POST <resource>/$query` (query in the body)   | 200, options applied; a query too long for the URL succeeds |
 | `$apply=groupby((Language))`                   | 200, groups correctly |
 | `$compute`                                     | 200    |
 | `$batch` (JSON)                                | 200    |
