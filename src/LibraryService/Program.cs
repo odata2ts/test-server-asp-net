@@ -1,6 +1,9 @@
 using LibraryService;
 using LibraryService.Data;
+using LibraryService.Query;
 using Microsoft.AspNetCore.OData;
+using Microsoft.AspNetCore.OData.Batch;
+using Microsoft.AspNetCore.OData.Query.Expressions;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -9,7 +12,15 @@ builder.Services.AddSingleton<LibraryData>();
 
 builder.Services.AddControllers().AddOData(options =>
     options
-        .AddRouteComponents("odata/v4/library", EdmModelBuilder.Build())
+        // The search binder has to go into the *per-route* container: OData resolves its query
+        // components from there, not from the application's service provider. Registered globally it is
+        // never found, and $search then answers 200 with the unfiltered set.
+        .AddRouteComponents(
+            "odata/v4/library",
+            EdmModelBuilder.Build(),
+            services => services
+                .AddSingleton<ISearchBinder, MediumSearchBinder>()
+                .AddSingleton<ODataBatchHandler, DefaultODataBatchHandler>())
         .Select()
         .Filter()
         .OrderBy()
@@ -20,6 +31,7 @@ builder.Services.AddControllers().AddOData(options =>
 
 var app = builder.Build();
 
+app.UseODataBatching();
 app.UseRouting();
 app.MapControllers();
 
