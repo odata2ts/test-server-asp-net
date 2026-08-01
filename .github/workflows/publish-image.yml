@@ -1,0 +1,95 @@
+name: Publish Image
+
+# Publishes the runnable test server to the GitHub Container Registry.
+#
+# Consumers pull `ghcr.io/odata2ts/test-server-asp-net:latest` and start it as a throwaway container - see
+# odata2ts/odata2ts, int-test/cap. `latest` therefore has to keep working: every push to main republishes
+# it, so the image never lags behind the model it is supposed to serve.
+
+# The branch is not pinned by name on purpose. A hardcoded name means the workflow silently stops
+# firing the day the default branch is renamed - which is exactly what happened here, the default was
+# `feat/library-test-model` until recently. Instead every push arrives and the job itself decides, by
+# comparing against the repository's actual default branch - see the `if:` below.
+on:
+  push:
+    tags: ["v*"]
+    branches: ["**"]
+  workflow_dispatch:
+
+concurrency:
+  # a newer commit on main makes an in-flight publish pointless
+  group: publish-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    # Publish from the default branch and from version tags only. Feature branches skip immediately.
+    if: >-
+      github.ref_type == 'tag' ||
+      github.ref_name == github.event.repository.default_branch ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # `latest` only from the default branch; a version tag additionally yields 1.2.3 / 1.2 / 1
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: test-server-asp-net:verify
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # A published image that does not actually serve the model is worse than none, so the image is
+      # smoke-tested before it is pushed - including one operation, since routing those is where an
+      # ASP.NET Core OData service breaks first.
+      - name: Smoke-test the image
+        run: |
+          docker run -d --name verify -p 4004:4004 test-server-asp-net:verify
+          for i in $(seq 1 60); do
+            curl -sfS http://localhost:4004/odata/v4/library/ > /dev/null && break
+            sleep 2
+          done
+          curl -sfS 'http://localhost:4004/odata/v4/library/$metadata' > /dev/null
+          curl -sfS 'http://localhost:4004/odata/v4/library/Books?$top=1' > /dev/null
+          count=$(curl -sfS 'http://localhost:4004/odata/v4/library/TotalMediaCount()' | grep -o '"value":[0-9]*')
+          echo "TotalMediaCount -> $count"
+          test -n "$count"
+          docker rm -f verify
+
+      - name: Push the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
