@@ -1,7 +1,11 @@
 using LibraryService;
+using LibraryService.Data;
 using Microsoft.AspNetCore.OData;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// One store for the whole process: the seed data is the contract consumers assert against.
+builder.Services.AddSingleton<LibraryData>();
 
 builder.Services.AddControllers().AddOData(options =>
     options

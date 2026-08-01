@@ -1,0 +1,287 @@
+using Library.Catalog;
+using Library.Circulation;
+using LibraryService.Data;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.OData.Deltas;
+using Microsoft.AspNetCore.OData.Formatter;
+using Microsoft.AspNetCore.OData.Query;
+using Microsoft.AspNetCore.OData.Results;
+using Microsoft.AspNetCore.OData.Routing.Controllers;
+
+namespace LibraryService.Controllers;
+
+/// <summary>
+/// The plain entity sets. `[EnableQuery]` hands `$select`, `$filter`, `$orderby`, `$top`, `$skip`,
+/// `$count` and `$expand` to the OData layer, which applies them to the returned <see cref="IQueryable{T}" />.
+/// </summary>
+public class MediaController(LibraryData data) : ODataController
+{
+    [EnableQuery(MaxExpansionDepth = 4)]
+    public IQueryable<Medium> Get() => data.Media.AsQueryable();
+
+    [EnableQuery]
+    public SingleResult<Medium> Get([FromRoute] Guid key) =>
+        SingleResult.Create(data.Media.Where(m => m.Id == key).AsQueryable());
+
+    /// <summary>Type-cast segment, e.g. <c>/Media/Library.Catalog.Book</c>.</summary>
+    [EnableQuery]
+    public IQueryable<Book> GetFromBook() => data.Media.OfType<Book>().AsQueryable();
+
+    [EnableQuery]
+    public IQueryable<EBook> GetFromEBook() => data.Media.OfType<EBook>().AsQueryable();
+
+    [EnableQuery]
+    public IQueryable<Audiobook> GetFromAudiobook() => data.Media.OfType<Audiobook>().AsQueryable();
+
+    [EnableQuery]
+    public IQueryable<CollectorsItem> GetFromCollectorsItem() => data.Media.OfType<CollectorsItem>().AsQueryable();
+
+    [EnableQuery]
+    public IQueryable<Copy> GetCopies([FromRoute] Guid key) =>
+        data.Copies.Where(c => c.MediumId == key).AsQueryable();
+
+    [EnableQuery]
+    public ActionResult<PublisherRegistry.Publisher> GetPublisherFromBook([FromRoute] Guid key) =>
+        data.Media.OfType<Book>().FirstOrDefault(b => b.Id == key)?.Publisher is { } publisher
+            ? publisher
+            : NotFound();
+
+    /// <summary>Contained entities, reachable only through their audiobook.</summary>
+    [EnableQuery]
+    public IQueryable<AudiobookChapter> GetChaptersFromAudiobook([FromRoute] Guid key) =>
+        (data.Media.OfType<Audiobook>().FirstOrDefault(a => a.Id == key)?.Chapters ?? []).AsQueryable();
+
+    public IActionResult Post([FromBody] Medium medium)
+    {
+        if (medium.Id == Guid.Empty)
+        {
+            medium.Id = Guid.NewGuid();
+        }
+
+        data.Media.Add(medium);
+        return Created(medium);
+    }
+
+    public IActionResult Patch([FromRoute] Guid key, Delta<Medium> delta)
+    {
+        var existing = data.Media.FirstOrDefault(m => m.Id == key);
+        if (existing is null)
+        {
+            return NotFound();
+        }
+
+        delta.Patch(existing);
+        return Updated(existing);
+    }
+
+    public IActionResult Delete([FromRoute] Guid key)
+    {
+        var existing = data.Media.FirstOrDefault(m => m.Id == key);
+        if (existing is null)
+        {
+            return NotFound();
+        }
+
+        data.Media.Remove(existing);
+        return NoContent();
+    }
+}
+
+public class CopiesController(LibraryData data) : ODataController
+{
+    [EnableQuery]
+    public IQueryable<Copy> Get() => data.Copies.AsQueryable();
+
+    /// <summary>
+    /// Composite key. Routed explicitly: the convention builds `keyMediumId` / `keyInventoryNumber`
+    /// route values, but does not match the two-part key template on its own.
+    /// </summary>
+    [HttpGet("odata/v4/library/Copies(MediumId={keyMediumId},InventoryNumber={keyInventoryNumber})")]
+    [EnableQuery]
+    public SingleResult<Copy> Get([FromRoute] Guid keyMediumId, [FromRoute] int keyInventoryNumber) =>
+        SingleResult.Create(
+            data.Copies.Where(c => c.MediumId == keyMediumId && c.InventoryNumber == keyInventoryNumber).AsQueryable());
+
+    [HttpGet("odata/v4/library/Copies(MediumId={keyMediumId},InventoryNumber={keyInventoryNumber})/Medium")]
+    [EnableQuery]
+    public ActionResult<Medium> GetMedium([FromRoute] Guid keyMediumId, [FromRoute] int keyInventoryNumber) =>
+        Find(data, keyMediumId, keyInventoryNumber)?.Medium is { } medium ? medium : NotFound();
+
+    [HttpPatch("odata/v4/library/Copies(MediumId={keyMediumId},InventoryNumber={keyInventoryNumber})")]
+    public IActionResult Patch([FromRoute] Guid keyMediumId, [FromRoute] int keyInventoryNumber, Delta<Copy> delta)
+    {
+        var existing = Find(data, keyMediumId, keyInventoryNumber);
+        if (existing is null)
+        {
+            return NotFound();
+        }
+
+        delta.Patch(existing);
+        return Updated(existing);
+    }
+
+    internal static Copy? Find(LibraryData data, Guid mediumId, int inventoryNumber) =>
+        data.Copies.FirstOrDefault(c => c.MediumId == mediumId && c.InventoryNumber == inventoryNumber);
+}
+
+public class MembersController(LibraryData data) : ODataController
+{
+    [EnableQuery(MaxExpansionDepth = 4)]
+    public IQueryable<Member> Get() => data.Members.AsQueryable();
+
+    [EnableQuery]
+    public SingleResult<Member> Get([FromRoute] int key) =>
+        SingleResult.Create(data.Members.Where(m => m.Id == key).AsQueryable());
+
+    [EnableQuery]
+    public IQueryable<Loan> GetLoans([FromRoute] int key) =>
+        (data.Members.FirstOrDefault(m => m.Id == key)?.Loans ?? []).AsQueryable();
+
+    [EnableQuery]
+    public IQueryable<Reservation> GetReservations([FromRoute] int key) =>
+        (data.Members.FirstOrDefault(m => m.Id == key)?.Reservations ?? []).AsQueryable();
+
+    [EnableQuery]
+    public ActionResult<IdDocument> GetIdDocument([FromRoute] int key) =>
+        data.Members.FirstOrDefault(m => m.Id == key)?.IdDocument is { } document ? document : NotFound();
+
+    public IActionResult Post([FromBody] Member member)
+    {
+        member.Id = data.Members.Count == 0 ? 1 : data.Members.Max(m => m.Id) + 1;
+        data.Members.Add(member);
+        return Created(member);
+    }
+
+    public IActionResult Patch([FromRoute] int key, Delta<Member> delta)
+    {
+        var existing = data.Members.FirstOrDefault(m => m.Id == key);
+        if (existing is null)
+        {
+            return NotFound();
+        }
+
+        delta.Patch(existing);
+        return Updated(existing);
+    }
+
+    public IActionResult Put([FromRoute] int key, [FromBody] Member member)
+    {
+        var existing = data.Members.FirstOrDefault(m => m.Id == key);
+        if (existing is null)
+        {
+            return NotFound();
+        }
+
+        data.Members.Remove(existing);
+        member.Id = key;
+        data.Members.Add(member);
+        return Updated(member);
+    }
+
+    public IActionResult Delete([FromRoute] int key)
+    {
+        var existing = data.Members.FirstOrDefault(m => m.Id == key);
+        if (existing is null)
+        {
+            return NotFound();
+        }
+
+        data.Members.Remove(existing);
+        return NoContent();
+    }
+}
+
+public class LoansController(LibraryData data) : ODataController
+{
+    [EnableQuery]
+    public IQueryable<Loan> Get() => data.Loans.AsQueryable();
+
+    [EnableQuery]
+    public SingleResult<Loan> Get([FromRoute] Guid key) =>
+        SingleResult.Create(data.Loans.Where(l => l.Id == key).AsQueryable());
+
+    [EnableQuery]
+    public ActionResult<Member> GetMember([FromRoute] Guid key) =>
+        data.Loans.FirstOrDefault(l => l.Id == key)?.Member is { } member ? member : NotFound();
+
+    [EnableQuery]
+    public ActionResult<Copy> GetCopy([FromRoute] Guid key) =>
+        data.Loans.FirstOrDefault(l => l.Id == key)?.Copy is { } copy ? copy : NotFound();
+}
+
+public class ReservationsController(LibraryData data) : ODataController
+{
+    [EnableQuery]
+    public IQueryable<Reservation> Get() => data.Reservations.AsQueryable();
+
+    [EnableQuery]
+    public SingleResult<Reservation> Get([FromRoute] Guid key) =>
+        SingleResult.Create(data.Reservations.Where(r => r.Id == key).AsQueryable());
+}
+
+public class IdDocumentsController(LibraryData data) : ODataController
+{
+    [EnableQuery]
+    public IQueryable<IdDocument> Get() => data.IdDocuments.AsQueryable();
+
+    [EnableQuery]
+    public SingleResult<IdDocument> Get([FromRoute] Guid key) =>
+        SingleResult.Create(data.IdDocuments.Where(d => d.Id == key).AsQueryable());
+}
+
+public class BranchesController(LibraryData data) : ODataController
+{
+    [EnableQuery]
+    public IQueryable<Branch> Get() => data.Branches.AsQueryable();
+
+    [EnableQuery]
+    public SingleResult<Branch> Get([FromRoute] int key) =>
+        SingleResult.Create(data.Branches.Where(b => b.Id == key).AsQueryable());
+}
+
+public class BookmobilesController(LibraryData data) : ODataController
+{
+    [EnableQuery]
+    public IQueryable<Bookmobile> Get() => data.Bookmobiles.AsQueryable();
+
+    [EnableQuery]
+    public SingleResult<Bookmobile> Get([FromRoute] int key) =>
+        SingleResult.Create(data.Bookmobiles.Where(b => b.Id == key).AsQueryable());
+}
+
+public class PublishersController(LibraryData data) : ODataController
+{
+    [EnableQuery]
+    public IQueryable<PublisherRegistry.Publisher> Get() => data.Publishers.AsQueryable();
+
+    [EnableQuery]
+    public SingleResult<PublisherRegistry.Publisher> Get([FromRoute] int key) =>
+        SingleResult.Create(data.Publishers.Where(p => p.Id == key).AsQueryable());
+
+    [EnableQuery]
+    public IQueryable<Book> GetBooks([FromRoute] int key) =>
+        (data.Publishers.FirstOrDefault(p => p.Id == key)?.Books ?? []).AsQueryable();
+}
+
+public class PublisherBranchesController(LibraryData data) : ODataController
+{
+    [EnableQuery]
+    public IQueryable<PublisherRegistry.Branch> Get() => data.PublisherBranches.AsQueryable();
+
+    [EnableQuery]
+    public SingleResult<PublisherRegistry.Branch> Get([FromRoute] int key) =>
+        SingleResult.Create(data.PublisherBranches.Where(b => b.Id == key).AsQueryable());
+}
+
+/// <summary>The <c>MainBranch</c> singleton.</summary>
+public class MainBranchController(LibraryData data) : ODataController
+{
+    [EnableQuery]
+    public ActionResult<Branch> Get() => data.MainBranch;
+
+    public IActionResult Patch(Delta<Branch> delta)
+    {
+        delta.Patch(data.MainBranch);
+        return Updated(data.MainBranch);
+    }
+}
