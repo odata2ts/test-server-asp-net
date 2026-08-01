@@ -1,0 +1,15 @@
+# .NET build output
+bin/
+obj/
+*.user
+
+# Local data
+*.db
+*.db-shm
+*.db-wal
+
+.vs/
+.idea/
+.env
+*.log
+.DS_Store
