@@ -89,7 +89,11 @@ The values are right in the payload as well: `Branch.Location` serialises as Geo
 The reference model contains two deliberate overload pairs, and **both survive into the metadata and are
 callable**:
 
-- `Search(Term)` and `Search(Term, MaxResults)` - same name, differing parameter count
+- `Search(Term)` and `Search(Term, MaxResults)` - same name, differing parameter count. Both are
+  *callable*, but only one endpoint is ever registered: OData resolves the function by name, so a second
+  action with the longer route template is never selected and its extra parameter stays unbound. The
+  request answers 200 with the unlimited result. One action serves both overloads and reads `MaxResults`
+  off the URL.
 - `AvailableCopies` bound once to a single `Medium` and once to a `Collection(Medium)`
 
 ### Binding parameter names

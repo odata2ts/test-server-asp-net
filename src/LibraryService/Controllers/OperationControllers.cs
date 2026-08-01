@@ -64,15 +64,36 @@ public class LibraryOperationsController(LibraryData data) : ODataController
     public IQueryable<Medium> NewReleases() =>
         data.Media.Where(m => m.PublicationDate >= new DateOnly(2020, 1, 1)).AsQueryable();
 
+    /// <summary>
+    /// Both overloads of <c>Search</c> - with and without <c>MaxResults</c> - in one action.
+    ///
+    /// They cannot be two actions: OData routing resolves the function by name and picks the
+    /// single-parameter route for both URLs, so a request carrying <c>MaxResults</c> silently landed on
+    /// the overload that ignores it and returned the full result. The metadata still declares both
+    /// overloads; only the dispatch is shared.
+    /// </summary>
     [HttpGet("odata/v4/library/Search(Term={term})")]
-    [EnableQuery]
-    public IQueryable<Medium> Search([FromODataUri] string term) => Matching(term).AsQueryable();
-
-    /// <summary>Second overload of the pair - same name, one parameter more.</summary>
     [HttpGet("odata/v4/library/Search(Term={term},MaxResults={maxResults})")]
     [EnableQuery]
-    public IQueryable<Medium> SearchLimited([FromODataUri] string term, [FromODataUri] int maxResults) =>
-        Matching(term).Take(maxResults).AsQueryable();
+    public IQueryable<Medium> Search([FromODataUri] string term)
+    {
+        var matches = Matching(term);
+
+        // Read MaxResults off the URL rather than from a bound parameter: OData registers only one
+        // endpoint for the function name, so the second route template never binds and the parameter
+        // would silently stay null - the exact failure this fixes.
+        var limit = MaxResultsFromUrl();
+        return (limit is { } max ? matches.Take(max) : matches).AsQueryable();
+    }
+
+    private int? MaxResultsFromUrl()
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(
+            Request.Path.Value ?? "",
+            @"MaxResults=(\d+)");
+
+        return match.Success && int.TryParse(match.Groups[1].Value, out var value) ? value : null;
+    }
 
     [HttpPost("odata/v4/library/ClosureDay")]
     public IActionResult ClosureDay([FromBody] ODataActionParameters parameters) =>
