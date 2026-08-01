@@ -1,6 +1,7 @@
 using Library.Catalog;
 using Library.Circulation;
 using Microsoft.OData.Edm;
+using Microsoft.OData.Edm.Vocabularies;
 using Microsoft.OData.ModelBuilder;
 
 namespace LibraryService;
@@ -70,7 +71,13 @@ public static class EdmModelBuilder
         medium.HasKey(m => m.Id);
         medium.Property(m => m.PopularityScore).HasComputed().IsComputed(true);
 
-        builder.EntityType<PrintMedium>().Abstract().DerivesFrom<Medium>();
+        // Core.AlternateKeys goes on the entity *type*, not on the entity set: that is where the
+        // reference model puts it, and where routing looks it up (GetDeclaredAlternateKeysForType).
+        // The reference model's PropertyRef carries a Name and no Alias, so none is set here.
+        builder.EntityType<PrintMedium>().Abstract().DerivesFrom<Medium>()
+            .HasAlternateKeys(k => k.HasKey(p => p
+                .HasName(new EdmPropertyPathExpression(nameof(PrintMedium.ISBN)))
+                .HasAlias(nameof(PrintMedium.ISBN))));
         builder.EntityType<Book>().DerivesFrom<PrintMedium>();
         builder.EntityType<Magazine>().DerivesFrom<PrintMedium>();
         builder.EntityType<TradeJournal>().DerivesFrom<Magazine>();
@@ -98,7 +105,8 @@ public static class EdmModelBuilder
 
         var copy = builder.EntityType<Copy>();
         copy.HasKey(c => new { c.MediumId, c.InventoryNumber });
-        copy.HasRequired(c => c.Medium!, (c, m) => c.MediumId == m.Id);
+        // Third argument is the partner: one call sets Partner on both sides of the association.
+        copy.HasRequired(c => c.Medium!, (c, m) => c.MediumId == m.Id, m => m.Copies);
 
         // Facets. Precision/Scale are settable as properties; SRID and Unicode have no equivalent at all
         // in the builder - see FEATURE-COVERAGE.md.
@@ -123,12 +131,16 @@ public static class EdmModelBuilder
         builder.EntityType<IdDocument>().Property(d => d.UploadedAt).Precision = 7;
         copy.Property(c => c.IsLoanable).DefaultValueString = "true";
 
-        // Delete behaviour and required navigation. `Partner` is deliberately absent here: it is
-        // read-only on NavigationPropertyConfiguration and there is no API to relate the two sides of an
-        // association, so the reference model's Partner attributes cannot be reproduced at all.
+        // Delete behaviour and required navigation. `NavigationPropertyConfiguration.Partner` is
+        // read-only, and neither `HasMany` nor the convention builder relates the two sides - but the
+        // three-argument overloads of HasRequired/HasOptional do. The referential constraint in the
+        // middle may be null, which is what makes them usable here: unlike Copy/Medium, these
+        // associations have no foreign key property in the reference model.
         member.HasMany(m => m.Loans).CascadeOnDelete();
-        loan.HasRequired(l => l.Member!);
+        loan.HasRequired(l => l.Member!, null, m => m.Loans);
         loan.HasRequired(l => l.Copy!);
+
+        builder.EntityType<Book>().HasOptional(b => b.Publisher!, null, p => p.Books);
 
         // --- publisher registry --------------------------------------------------------------------
         builder.EntityType<PublisherRegistry.Publisher>().HasKey(p => p.Id);
@@ -137,7 +149,7 @@ public static class EdmModelBuilder
 
     private static void ConfigureEntitySets(ODataConventionModelBuilder builder)
     {
-        builder.EntitySet<Medium>("Media");
+        builder.EntitySet<Medium>("Media").HasSearchRestrictions().IsSearchable(true);
         builder.EntitySet<Copy>("Copies");
         builder.EntitySet<Member>("Members");
         builder.EntitySet<Loan>("Loans");

@@ -23,6 +23,19 @@ public class MediaController(LibraryData data) : ODataController
     public SingleResult<Medium> Get([FromRoute] Guid key) =>
         SingleResult.Create(data.Media.Where(m => m.Id == key).AsQueryable());
 
+    /// <summary>
+    /// Addressing by the <c>Core.AlternateKeys</c> key on <c>PrintMedium/ISBN</c>. The route template has
+    /// to be spelled out: a conventional <c>Get(string keyISBN)</c> action is not matched, the request
+    /// then runs off the end of the middleware pipeline.
+    /// </summary>
+    [HttpGet("odata/v4/library/Media/Library.Catalog.PrintMedium(ISBN={isbn})")]
+    [EnableQuery]
+    public SingleResult<PrintMedium> GetByIsbn([FromRoute] string isbn)
+    {
+        var value = isbn.Trim('\'');
+        return SingleResult.Create(data.Media.OfType<PrintMedium>().Where(m => m.ISBN == value).AsQueryable());
+    }
+
     /// <summary>Type-cast segment, e.g. <c>/Media/Library.Catalog.Book</c>.</summary>
     [EnableQuery]
     public IQueryable<Book> GetFromBook() => data.Media.OfType<Book>().AsQueryable();
