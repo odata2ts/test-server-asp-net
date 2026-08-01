@@ -4,9 +4,12 @@ How far ASP.NET Core OData reproduces
 [`model/library.xml`](https://github.com/odata2ts/test-reference-model/blob/main/model/library.xml), and
 where it cannot.
 
-Measured against **.NET 10.0.10** (the current LTS) with **Microsoft.AspNetCore.OData 9.5.0**. Every
-statement below was verified against the emitted `$metadata` and against the running service - by
-diffing the metadata mechanically, not by reading it.
+Measured against **.NET 10.0.10** (the current LTS) with **Microsoft.AspNetCore.OData 9.5.0**
+(→ `Microsoft.OData.ModelBuilder` 2.0.0, `Microsoft.OData.Edm`/`Core` 8.4.0). Every statement below was
+verified against the emitted `$metadata` and against the running service - by diffing the metadata
+mechanically, not by reading it. Claims about what the *libraries* can or cannot do were checked against
+their actual API surface by reflection and against isolated probe models, not inferred from this
+service's behaviour.
 
 The reference model is a deliberately feature-dense probe of the OData spec, not a benchmark. A server
 does not have to implement all of OData. So this document separates *what the library cannot express* from
@@ -18,9 +21,12 @@ The **protocol and operation surface is reproduced completely**: all 20 entity t
 2 enums, 88 properties, 12 navigation properties, 10 entity sets, the singleton and all 29 operations -
 including both overload pairs, which is the part most implementations lose.
 
-What does not survive is **model metadata detail**: 14 attributes of the reference EDMX have no
-equivalent in the model builder. None of them is exotic; they are `Partner`, `SRID`, `TypeDefinition`,
-`Unicode` and two vocabulary annotations.
+**Model metadata detail** comes through as well, on all but two counts. All six `Partner` attributes, both
+vocabulary annotations that used to be missing and addressing by alternate key are in place - each
+through an API that is easy to overlook, which is why they are written up below rather than just ticked
+off. The six `SRID` attributes are absent but carry the value CSDL defines as the default, so nothing is
+lost; ODL's own CSDL writer drops them from a hand-built model too. What the model builder genuinely
+cannot express is two attributes: `TypeDefinition` and `Unicode`.
 
 | Area                                    | Verdict                                                     |
 | --------------------------------------- | ----------------------------------------------------------- |
@@ -30,35 +36,16 @@ equivalent in the model builder. None of them is exotic; they are `Partner`, `SR
 | Operations (14 functions, 14 actions)    | complete, both overload pairs survive                        |
 | Query options                            | complete, `$search` only with a hand-written binder           |
 | Containment, media entities, open types  | complete, streams and `$ref` served in every position         |
-| Model metadata detail                    | **14 attributes not expressible** - see below                |
-| Vocabulary annotations                   | 2 of 4 - `Computed` and `OptimisticConcurrency` only          |
+| Navigation properties incl. `Partner`    | complete, both sides related, `OnDelete` intact              |
+| Model metadata detail                    | **2 attributes not expressible**, 6 redundant - see below     |
+| Vocabulary annotations                   | 4 of 4, alternate key addressable via the type cast          |
 
-## What cannot be expressed at all
+## What the model builder cannot express
 
-These are limits of `Microsoft.OData.ModelBuilder`, not of this implementation. Each was checked against
-the library's API surface before being recorded here.
-
-### `Partner` on navigation properties (6 occurrences)
-
-The reference model relates both sides of an association - `Medium/Copies` ↔ `Copy/Medium`,
-`Member/Loans` ↔ `Loan/Member`, `Publisher/Books` ↔ `Book/Publisher`.
-
-`NavigationPropertyConfiguration.Partner` is **read-only**, and there is no API that relates two
-navigation properties: no `WithMany`, no `WithRequired`, no `HasPartner`. The convention builder does not
-infer it either, even though both sides are declared. The emitted model therefore has the navigation
-properties but not the round trip between them, which costs a client the ability to navigate back
-without consulting the entity sets.
-
-`OnDelete="Cascade"` next to it *is* expressible (`CascadeOnDelete()`), and comes through.
-
-### `SRID` on spatial properties (6 occurrences)
-
-`Edm.GeographyPoint SRID="4326"` and `Edm.GeometryPoint SRID="0"` lose their SRID facet. There is no
-`SRID` on any property configuration.
-
-The spatial types themselves work, and the values are correct: `Branch.Location` serialises as GeoJSON
-including `"crs": {"name": "EPSG:4326"}`, so the coordinate system survives *in the payload* while being
-absent *from the metadata*. A client reading only the metadata cannot know it.
+These are limits of `Microsoft.OData.ModelBuilder` 2.0.0, not of this implementation. Each was checked
+against the library's API surface, and against what ODL's CSDL writer does with a hand-built `IEdmModel`,
+before being recorded here - "the builder has no method for it" is a claim about the library, so it was
+verified against the library, not inferred from this service's metadata.
 
 ### `TypeDefinition`
 
@@ -67,19 +54,33 @@ no concept of a type definition; the property is emitted as plain `Edm.String`. 
 kept, so nothing is lost semantically, but the named type is gone and with it the intent that ISBN is a
 type rather than a string that happens to be short.
 
+The layer below can do it: `EdmTypeDefinition` + `EdmTypeDefinitionReference` emit a `<TypeDefinition>`
+element, and `AddRouteComponents` takes any `IEdmModel`. So the wall is the fluent builder, not the
+stack - at the price of hand-building the model.
+
 ### `Unicode="false"`
 
-`Copy/Location_` is declared non-unicode. There is no `IsUnicode` on any property configuration.
+`Copy/Location_` is declared non-unicode. There is no `IsUnicode` on any property configuration;
+`MaxLength` and `Precision` are the only facets it exposes. Same shape as `TypeDefinition`: the Edm API
+expresses it (`EdmStringTypeReference(..., isUnicode: false)` emits `Unicode="false"`), the builder
+does not.
 
-### `Core.AlternateKeys`
+### `SRID` on spatial properties (6 occurrences) - and why it costs nothing
 
-`PrintMedium` carries an alternate key on `ISBN`. The annotation is not emitted, and consequently
-`GET /Media(ISBN='9783518188002')` answers **404** - verified. Addressing by alternate key is not
-available.
+`Edm.GeographyPoint SRID="4326"` and `Edm.GeometryPoint SRID="0"` lose their SRID facet; there is no
+`SRID` on any property configuration.
 
-### `Capabilities.SearchRestrictions`
+The diff makes this look like a loss, and it is not. CSDL defines the facet's default as 4326 for
+`Geography` types and 0 for `Geometry` types - exactly the two values the reference model spells out. The
+declarations are redundant, and a client reading only the metadata resolves the same effective SRID
+either way.
 
-Not emitted. This is metadata only: `$search` itself works, see below.
+It is not even a builder limitation. ODL's CSDL writer drops a default SRID from a hand-built model too:
+set 3857 on a `GeographyPoint` and `SRID="3857"` is emitted, set 4326 and nothing is. A non-default SRID
+would be the interesting case, and the reference model does not have one.
+
+The values are right in the payload as well: `Branch.Location` serialises as GeoJSON including
+`"crs": {"name": "EPSG:4326"}`.
 
 ## What works, including the parts that usually do not
 
@@ -125,7 +126,56 @@ The flags enum round-trips including the non-ASCII member: `"Amenities": "Wheelc
 Expressible via `[ConcurrencyCheck]`, emitted, and effective: `Copy` answers with `@odata.etag` in the
 payload.
 
-## Two traps worth knowing
+### `Partner` on both sides of every association
+
+All six `Partner` attributes are emitted - `Medium/Copies` ↔ `Copy/Medium`, `Member/Loans` ↔
+`Loan/Member`, `Publisher/Books` ↔ `Book/Publisher`.
+
+This one hides well enough to look impossible: `NavigationPropertyConfiguration.Partner` has an
+`internal` setter, there is no `WithMany`/`WithRequired`/`HasPartner`, and the convention builder does
+not infer a partner even though both sides are declared. But `HasRequired` and `HasOptional` each carry a
+three-argument overload whose last argument *is* the partner - in a single-valued and a
+collection-valued flavour - and one call sets `Partner` on both navigation properties:
+
+```csharp
+copy.HasRequired(c => c.Medium!, (c, m) => c.MediumId == m.Id, m => m.Copies);
+loan.HasRequired(l => l.Member!, null, m => m.Loans);
+builder.EntityType<Book>().HasOptional(b => b.Publisher!, null, p => p.Books);
+```
+
+The referential constraint in the middle may be `null`, which is what makes the last two work: unlike
+`Copy/Medium`, those associations have no foreign key property in the reference model to constrain
+against. `OnDelete="Cascade"` on `Member/Loans` survives next to it.
+
+### `Core.AlternateKeys`, and addressing by one
+
+`HasAlternateKeys` sits on `EntityTypeConfiguration<T>` as well as on `EntitySetConfiguration<T>`, and
+the choice is not cosmetic: routing resolves the annotation **on the entity type**
+(`GetDeclaredAlternateKeysForType`). Annotated on the entity set, `$metadata` looks right while the
+address keeps answering 404. The reference model annotates the type, which is also the form that works.
+
+Because `ISBN` is declared on `PrintMedium` and the entity set is of `Medium`, the address needs the type
+cast - the same rule containment already follows here:
+
+```
+GET /Media/Library.Catalog.PrintMedium(ISBN='9783518188002')   200, full OData payload
+GET /Media(ISBN='9783518188002')                               404
+```
+
+The route template has to be spelled out; a conventional `Get(string keyISBN)` action is not matched and
+the request runs off the end of the middleware pipeline. Resolving an alternate key *outside* routing -
+in `$filter`, in `$id` - additionally needs `AlternateKeysODataUriResolver` in the per-route container.
+
+One deviation from the reference EDMX is forced, see the third trap below: the emitted `PropertyRef`
+carries `Alias="ISBN"`, which the reference model omits.
+
+### `Capabilities.SearchRestrictions`
+
+`HasSearchRestrictions().IsSearchable(true)` on the entity set configuration, emitted on
+`Container/Media` as in the reference model. `$search` itself works, see the trap about the per-route
+container below.
+
+## Three traps worth knowing
 
 Both cost real time and neither produces an error - the service builds and runs, it just does the wrong
 thing.
@@ -149,6 +199,25 @@ container. The registration compiles, runs, and is never used.
 Only `AddRouteComponents(prefix, model, services => …)` works. With the binder in place `$search` filters
 correctly, `AND`/`OR`/`NOT` included.
 
+### An alternate key without `Alias` takes the whole service down
+
+`Core.PropertyRef` has `Name` and an **optional** `Alias`; the reference model gives only the name, which
+is legal CSDL. `Microsoft.OData.Edm` 8.4.0 does not survive it: `GetDeclaredAlternateKeysForType` throws
+a `NullReferenceException` on such an annotation.
+
+It does not surface as a failing request, because it happens while the attribute route template is being
+parsed - during `MapControllers()`, at startup. The service does not start at all, and the stack trace
+points at the URI parser rather than at the model:
+
+```
+System.NullReferenceException
+   at Microsoft.OData.Edm.ExtensionMethods.GetDeclaredAlternateKeysForType(IEdmEntityType, IEdmModel)
+   at Microsoft.OData.UriParser.AlternateKeysODataUriResolver.TryResolveAlternateKeys(…)
+```
+
+Setting the alias (`HasAlias("ISBN")`) avoids it. That is the one place where the emitted model carries
+an attribute the reference EDMX does not - a library defect worked around, not a modelling decision.
+
 ## Verified behaviour
 
 Everything below was executed against the running service.
@@ -167,7 +236,8 @@ Everything below was executed against the running service.
 | Type-cast segment `/Media/Library.Catalog.Book` | 200   |
 | Containment via type cast                      | 200    |
 | All 14 functions, all 14 actions               | 200 / 201 / 204 as declared |
-| `GET /Media(ISBN='…')` (alternate key)         | **404** |
+| `GET /Media/Library.Catalog.PrintMedium(ISBN='…')` (alternate key) | 200 |
+| `GET /Media(ISBN='…')` (alternate key without the type cast) | 404 |
 | `GET`/`PUT`/`DELETE` `/Media(<id>)/$value` (media entity stream) | 200 / 204 / 204 |
 | `GET`/`PUT` `/Media(<id>)/Library.Catalog.Audiobook/Sample` (stream property) | 200 / 204 |
 | `GET`/`PUT` `…/Chapters(<id>)/$value` (contained media entity) | 200 / 204 |
@@ -254,4 +324,13 @@ key is unknown is treated as an upsert.
 
 ## Not implemented here
 
-Nothing outstanding: every feature the reference model declares is served.
+Nothing outstanding: every feature the reference model declares is served, and every attribute it
+declares is emitted except the two the model builder cannot express (`TypeDefinition`, `Unicode`) and the
+six redundant `SRID` facets - all of them above, with the reasoning.
+
+Two deviations from the reference EDMX are deliberate and both are forced from below, not chosen:
+
+- the alternate key's `PropertyRef` carries an `Alias`, because ODL throws without one
+- addressing by that key needs the type cast (`/Media/Library.Catalog.PrintMedium(ISBN='…')`), because
+  `ISBN` is declared on `PrintMedium` while the entity set is of `Medium` - which is what the spec asks
+  for, and the same shape containment already has here

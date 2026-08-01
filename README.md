@@ -26,9 +26,11 @@ running service - not on documentation.
 
 Short version: the protocol and operation surface is reproduced completely - all 20 entity types, all 29
 operations including both overload pairs, containment, media entities, open types, `$batch`, `$apply`.
-Media entity streams, `$ref`, deep insert and 4.01 delta payloads are all served. What does not survive is
-model metadata detail: 14 attributes of the reference EDMX have no equivalent in the model
-builder, among them `Partner`, `SRID` and `TypeDefinition`.
+Media entity streams, `$ref`, deep insert and 4.01 delta payloads are all served, and so is the model
+metadata down to `Partner` on both sides of every association, alternate keys and all four vocabulary
+annotations. Two attributes of the reference EDMX have no equivalent in the model builder at all:
+`TypeDefinition` and `Unicode`. `SRID` is dropped too, but carries the CSDL default value throughout the
+reference model and therefore costs nothing.
 
 ## Version policy
 
