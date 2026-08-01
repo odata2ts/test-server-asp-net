@@ -79,7 +79,7 @@ jobs:
             sleep 2
           done
           curl -sfS 'http://localhost:4004/odata/v4/library/$metadata' > /dev/null
-          curl -sfS 'http://localhost:4004/odata/v4/library/Books?$top=1' > /dev/null
+          curl -sfS 'http://localhost:4004/odata/v4/library/Media?$top=1' > /dev/null
           count=$(curl -sfS 'http://localhost:4004/odata/v4/library/TotalMediaCount()' | grep -o '"value":[0-9]*')
           echo "TotalMediaCount -> $count"
           test -n "$count"
