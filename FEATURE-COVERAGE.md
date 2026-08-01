@@ -29,7 +29,7 @@ equivalent in the model builder. None of them is exotic; they are `Partner`, `SR
 | Enums incl. flags and non-ASCII members  | complete                                                     |
 | Operations (14 functions, 14 actions)    | complete, both overload pairs survive                        |
 | Query options                            | complete, `$search` only with a hand-written binder           |
-| Containment, media entities, open types  | complete                                                     |
+| Containment, media entities, open types  | complete, streams and `$ref` served in every position         |
 | Model metadata detail                    | **14 attributes not expressible** - see below                |
 | Vocabulary annotations                   | 2 of 4 - `Computed` and `OptimisticConcurrency` only          |
 
@@ -168,15 +168,32 @@ Everything below was executed against the running service.
 | Containment via type cast                      | 200    |
 | All 14 functions, all 14 actions               | 200 / 201 / 204 as declared |
 | `GET /Media(ISBN='…')` (alternate key)         | **404** |
-| `GET /Media(<id>)/$value` (media entity stream) | **404** |
-| `GET /Members(1)/Loans/$ref`                   | **404** |
+| `GET`/`PUT`/`DELETE` `/Media(<id>)/$value` (media entity stream) | 200 / 204 / 204 |
+| `GET`/`PUT` `/Media(<id>)/Library.Catalog.Audiobook/Sample` (stream property) | 200 / 204 |
+| `GET`/`PUT` `…/Chapters(<id>)/$value` (contained media entity) | 200 / 204 |
+| `$ref` on a collection-valued navigation property | 200 / 204 |
+| `$ref` on a single-valued navigation property  | 200 / 204 |
+
+### Media entity streams
+
+All three positions the reference model puts a stream in are served, read and write:
+
+- `EBook` - a media entity *inside* the inheritance hierarchy
+- `AudiobookChapter` - a media entity that is at the same time a *contained* entity, reached as
+  `…/Library.Catalog.Audiobook/Chapters(<id>)/$value`
+- `Audiobook.Sample` - a stream *property* rather than an entity's content
+
+The content type given on `PUT` is stored and returned on the next `GET`. An entity that exists but has
+no content yet answers `204`, not `404` - the distinction matters to a client deciding whether to upload.
+
+### `$ref`
+
+Both cardinalities are served, and they differ in the verbs as the spec requires: a collection-valued
+navigation property takes `POST` to add and `DELETE` with `$id` to remove, a single-valued one takes `PUT`
+to set and plain `DELETE` to clear. A reference to a non-existent entity is refused with `400`.
 
 ## Not implemented here, though the library supports it
 
-Kept separate from the list above on purpose - these are gaps in *this* service, not in ASP.NET Core
-OData, and could be added:
+Kept separate on purpose - a gap in *this* service, not in ASP.NET Core OData:
 
-- **Media entity streams.** `EBook` and `AudiobookChapter` are declared `HasStream`, and `Audiobook.Sample`
-  is an `Edm.Stream` property, but no stream handler is wired up, so `$value` answers 404.
-- **`$ref`.** Relationship management through `$ref` is not routed.
 - **Deep insert** and **delta payloads** are untested.

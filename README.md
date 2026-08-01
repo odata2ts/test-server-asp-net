@@ -26,8 +26,9 @@ running service - not on documentation.
 
 Short version: the protocol and operation surface is reproduced completely - all 20 entity types, all 29
 operations including both overload pairs, containment, media entities, open types, `$batch`, `$apply`.
-What does not survive is model metadata detail: 14 attributes of the reference EDMX have no equivalent in
-the model builder, among them `Partner`, `SRID` and `TypeDefinition`.
+Media entity streams and `$ref` are served in every position the reference model puts them. What does not
+survive is model metadata detail: 14 attributes of the reference EDMX have no equivalent in the model
+builder, among them `Partner`, `SRID` and `TypeDefinition`.
 
 ## Version policy
 
@@ -72,6 +73,9 @@ metadata: <http://localhost:5000/odata/v4/library/$metadata>
 | `src/LibraryService/Data/`            | In-memory store with fixed seed keys                                   |
 | `src/LibraryService/Controllers/`     | Entity sets and singleton; all functions and actions                   |
 | `src/LibraryService/Query/`           | `$search` binder - without it the option is silently ignored           |
+
+Streams (`$value`, the `Sample` stream property, contained chapters) and `$ref` live in
+`Controllers/StreamControllers.cs` and `Controllers/RefControllers.cs`.
 
 Notes worth knowing before editing:
 

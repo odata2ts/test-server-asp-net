@@ -38,6 +38,19 @@ public sealed class LibraryData
 
     public Branch MainBranch => Branches[0];
 
+    /// <summary>
+    /// Content of the media entities, keyed by entity id. Held next to the entities rather than on them:
+    /// <c>Edm.Stream</c> is a link in the payload, never an inline value, so the bytes never travel with
+    /// the entity itself.
+    /// </summary>
+    public Dictionary<Guid, MediaContent> EntityContent { get; } = [];
+
+    /// <summary>Content of the contained audiobook chapters, keyed by audiobook id and chapter id.</summary>
+    public Dictionary<(Guid Audiobook, int Chapter), MediaContent> ChapterContent { get; } = [];
+
+    /// <summary>Value of the <c>Audiobook.Sample</c> stream property, keyed by audiobook id.</summary>
+    public Dictionary<Guid, MediaContent> SampleContent { get; } = [];
+
     public LibraryData() => Seed();
 
     private void Seed()
@@ -275,6 +288,11 @@ public sealed class LibraryData
         Reservations.Add(reservation);
         alice.Reservations.Add(reservation);
 
+        EntityContent[EBookId] = new MediaContent("application/epub+zip", "EPUB placeholder for tests"u8.ToArray());
+        ChapterContent[(AudiobookId, 1)] = new MediaContent("audio/mpeg", "chapter one audio"u8.ToArray());
+        ChapterContent[(AudiobookId, 2)] = new MediaContent("audio/mpeg", "chapter two audio"u8.ToArray());
+        SampleContent[AudiobookId] = new MediaContent("audio/mpeg", "sample audio"u8.ToArray());
+
         var idDocument = new IdDocument
         {
             Id = new Guid("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
@@ -285,3 +303,6 @@ public sealed class LibraryData
         alice.IdDocument = idDocument;
     }
 }
+
+/// <summary>A stream's bytes together with the media type they were stored with.</summary>
+public sealed record MediaContent(string ContentType, byte[] Bytes);
