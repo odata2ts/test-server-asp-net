@@ -173,6 +173,8 @@ Everything below was executed against the running service.
 | `GET`/`PUT` `…/Chapters(<id>)/$value` (contained media entity) | 200 / 204 |
 | `$ref` on a collection-valued navigation property | 200 / 204 |
 | `$ref` on a single-valued navigation property  | 200 / 204 |
+| Deep insert (`POST` with nested entities)      | 201, children addressable in their own set |
+| Delta payload (`PATCH` on the collection)      | 200, update + removal + upsert applied |
 
 ### Media entity streams
 
@@ -192,8 +194,31 @@ Both cardinalities are served, and they differ in the verbs as the spec requires
 navigation property takes `POST` to add and `DELETE` with `$id` to remove, a single-valued one takes `PUT`
 to set and plain `DELETE` to clear. A reference to a non-existent entity is refused with `400`.
 
-## Not implemented here, though the library supports it
+### Deep insert
 
-Kept separate on purpose - a gap in *this* service, not in ASP.NET Core OData:
+`POST /Members` with nested `Loans` creates the parent and the children in one request.
 
-- **Deep insert** and **delta payloads** are untested.
+Worth knowing, because it does **not** fail loudly: the deserializer fills the nested entities into the
+parent's navigation property, but nothing registers them anywhere else. Left at that, the child is
+reachable through `Members(3)/Loans` while carrying an all-zero key and being absent from `/Loans` - an
+inconsistent state, not a partial one, and the request still answers 201. The controller therefore assigns
+keys and registers nested entities in their own sets explicitly.
+
+### Delta payloads (OData 4.01)
+
+`PATCH /Members` with a `$delta` payload applies updates, removals and upserts in a single request:
+
+```json
+{ "@context": "…/$metadata#Members/$delta",
+  "value": [ { "Id": 1, "Name": "…" },
+             { "@removed": { "reason": "deleted" }, "Id": 2 },
+             { "Id": 99, "Name": "…" } ] }
+```
+
+All three took effect, and the response is a proper delta payload carrying `@odata.removed` and
+`@odata.id`. Entries arrive as `Delta<T>` or `DeltaDeletedResource<T>` in a `DeltaSet<T>`; an entry whose
+key is unknown is treated as an upsert.
+
+## Not implemented here
+
+Nothing outstanding: every feature the reference model declares is served.

@@ -59,6 +59,15 @@ public class MediaController(LibraryData data) : ODataController
         }
 
         data.Media.Add(medium);
+
+        // Deep insert: copies that arrived nested must also become addressable as /Copies.
+        foreach (var copy in medium.Copies.Where(c => !data.Copies.Contains(c)))
+        {
+            copy.MediumId = medium.Id;
+            copy.Medium = medium;
+            data.Copies.Add(copy);
+        }
+
         return Created(medium);
     }
 
@@ -149,7 +158,94 @@ public class MembersController(LibraryData data) : ODataController
     {
         member.Id = data.Members.Count == 0 ? 1 : data.Members.Max(m => m.Id) + 1;
         data.Members.Add(member);
+        RegisterNested(member);
         return Created(member);
+    }
+
+    /// <summary>
+    /// Delta payload on the collection (OData 4.01): a mixed batch of upserts and removals in one
+    /// request. Entries carrying <c>@removed</c> arrive as <see cref="DeltaDeletedResource{T}" />.
+    /// </summary>
+    [HttpPatch("odata/v4/library/Members")]
+    public IActionResult PatchCollection([FromBody] DeltaSet<Member> deltaSet)
+    {
+        foreach (var item in deltaSet)
+        {
+            switch (item)
+            {
+                case DeltaDeletedResource<Member> removed:
+                    if (KeyOf(removed) is { } removedId
+                        && data.Members.FirstOrDefault(m => m.Id == removedId) is { } toRemove)
+                    {
+                        data.Members.Remove(toRemove);
+                    }
+
+                    break;
+
+                case Delta<Member> delta:
+                    var id = KeyOf(delta);
+                    if (id is not null && data.Members.FirstOrDefault(m => m.Id == id) is { } existing)
+                    {
+                        delta.Patch(existing);
+                    }
+                    else
+                    {
+                        // Upsert: an entry whose key is unknown creates the entity.
+                        var created = delta.GetInstance();
+                        created.Id = id ?? (data.Members.Count == 0 ? 1 : data.Members.Max(m => m.Id) + 1);
+                        data.Members.Add(created);
+                        RegisterNested(created);
+                    }
+
+                    break;
+            }
+        }
+
+        return Ok(deltaSet);
+    }
+
+    private static int? KeyOf(IDeltaSetItem item) =>
+        item is Delta<Member> delta && delta.TryGetPropertyValue(nameof(Member.Id), out var value)
+            ? Convert.ToInt32(value)
+            : null;
+
+    /// <summary>
+    /// Registers the entities that arrived nested inside the payload (deep insert) in their own sets.
+    /// Without this they exist only inside the parent's navigation property: reachable through it, but
+    /// keyless and absent from <c>/Loans</c> - an inconsistent state rather than a partial one.
+    /// </summary>
+    private void RegisterNested(Member member)
+    {
+        foreach (var loan in member.Loans.Where(l => !data.Loans.Contains(l)))
+        {
+            if (loan.Id == Guid.Empty)
+            {
+                loan.Id = Guid.NewGuid();
+            }
+
+            loan.Member = member;
+            data.Loans.Add(loan);
+        }
+
+        foreach (var reservation in member.Reservations.Where(r => !data.Reservations.Contains(r)))
+        {
+            if (reservation.Id == Guid.Empty)
+            {
+                reservation.Id = Guid.NewGuid();
+            }
+
+            data.Reservations.Add(reservation);
+        }
+
+        if (member.IdDocument is { } document && !data.IdDocuments.Contains(document))
+        {
+            if (document.Id == Guid.Empty)
+            {
+                document.Id = Guid.NewGuid();
+            }
+
+            data.IdDocuments.Add(document);
+        }
     }
 
     public IActionResult Patch([FromRoute] int key, Delta<Member> delta)

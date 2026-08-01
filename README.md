@@ -26,8 +26,8 @@ running service - not on documentation.
 
 Short version: the protocol and operation surface is reproduced completely - all 20 entity types, all 29
 operations including both overload pairs, containment, media entities, open types, `$batch`, `$apply`.
-Media entity streams and `$ref` are served in every position the reference model puts them. What does not
-survive is model metadata detail: 14 attributes of the reference EDMX have no equivalent in the model
+Media entity streams, `$ref`, deep insert and 4.01 delta payloads are all served. What does not survive is
+model metadata detail: 14 attributes of the reference EDMX have no equivalent in the model
 builder, among them `Partner`, `SRID` and `TypeDefinition`.
 
 ## Version policy
