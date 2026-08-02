@@ -253,7 +253,8 @@ Everything below was executed against the running service.
 | --------------------------------------------- | ------ |
 | `$metadata`, service document                  | 200    |
 | CRUD on entity sets (`POST`/`PATCH`/`DELETE`)  | 201 / 204 / 204 |
-| Composite key `Copies(MediumId=…,InventoryNumber=…)` | 200 |
+| Composite key `Copies(MediumId=…,InventoryNumber=…)` | 200 / 204 / 204 on GET / PATCH / DELETE |
+| Second copy with an existing composite key      | 409    |
 | Singleton `MainBranch`                         | 200    |
 | `$filter`, `$orderby`, `$top`, `$skip`, `$select`, `$expand`, `$count` | 200 |
 | `$search` (with binder)                        | filters correctly |
@@ -291,6 +292,18 @@ no content yet answers `204`, not `404` - the distinction matters to a client de
 `DELETE` clears the content and follows the same distinction: `404` means the *entity* is unknown, never
 that it currently has no content, so deleting twice succeeds twice. Reporting `404` for an already empty
 stream would contradict the `204` that `GET` answers for exactly that state.
+
+### Creating a copy: the hand-written parser
+
+`POST /Copies` reads the payload itself rather than through `[FromBody] Delta<Copy>`, because the OData
+deserializer refuses a body binding a navigation property backed by a referential constraint. The price is
+that every property has to be read explicitly - and three of them were missing, so `WeightKg`, `Status` and
+`AcquisitionDate` were silently stored as their defaults while `PATCH` (which does go through `Delta<T>`)
+kept them. They are read now.
+
+A duplicate composite key is refused with `409`. Accepting it left two copies with the same key in the
+store, after which *every* keyed read of that copy failed with "SingleResult must have zero or one
+elements" - a store that could not be read from any more.
 
 ### `$ref`
 

@@ -183,10 +183,31 @@ public class CopiesController(LibraryData data) : ODataController
             return BadRequest("The referenced medium does not exist.");
         }
 
+        // A second copy with the same composite key used to be accepted, after which a keyed read failed
+        // with "SingleResult must have zero or one elements" - a store that cannot be read from any more.
+        if (Find(data, copy.MediumId, copy.InventoryNumber) is not null)
+        {
+            return Conflict($"A copy with inventory number {copy.InventoryNumber} exists for this medium.");
+        }
+
         copy.Medium = medium;
         medium.Copies.Add(copy);
         data.Copies.Add(copy);
         return Created(copy);
+    }
+
+    /// <summary>Deletes a copy. Routed explicitly for the same reason as the other composite-key routes.</summary>
+    [HttpDelete("odata/v4/library/Copies(MediumId={keyMediumId},InventoryNumber={keyInventoryNumber})")]
+    public IActionResult Delete([FromRoute] Guid keyMediumId, [FromRoute] int keyInventoryNumber)
+    {
+        if (Find(data, keyMediumId, keyInventoryNumber) is not { } existing)
+        {
+            return NotFound();
+        }
+
+        existing.Medium?.Copies.Remove(existing);
+        data.Copies.Remove(existing);
+        return NoContent();
     }
 
     private async Task<Copy?> ReadCopyFromBody()
@@ -225,6 +246,25 @@ public class CopiesController(LibraryData data) : ODataController
         if (root.TryGetProperty(nameof(Copy.Location_), out var shelf))
         {
             copy.Location_ = shelf.GetString();
+        }
+
+        // Read by hand like everything else here, and easy to forget: these three were silently dropped on
+        // create - stored as their defaults - while `PATCH` kept them, since that one goes through Delta<T>.
+        if (root.TryGetProperty(nameof(Copy.WeightKg), out var weight))
+        {
+            copy.WeightKg = weight.GetSingle();
+        }
+
+        if (root.TryGetProperty(nameof(Copy.Status), out var status)
+            && Enum.TryParse<AvailabilityStatus>(status.GetString(), out var parsedStatus))
+        {
+            copy.Status = parsedStatus;
+        }
+
+        if (root.TryGetProperty(nameof(Copy.AcquisitionDate), out var acquired)
+            && DateOnly.TryParse(acquired.GetString(), out var parsedDate))
+        {
+            copy.AcquisitionDate = parsedDate;
         }
 
         if (NavigationBinding.Read(Request, nameof(Copy.Location), NavigationBinding.AsInt) is { } branchId)
