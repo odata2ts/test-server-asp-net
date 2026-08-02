@@ -53,9 +53,24 @@ public class MediaStreamController(LibraryData data) : ODataController
         return NoContent();
     }
 
+    /// <summary>
+    /// Clears the content of a media entity.
+    ///
+    /// 404 says the *entity* is unknown, not that it currently has no content: an entity without content
+    /// answers 204 on GET above, so reporting 404 here for the same state would contradict it. Deleting
+    /// twice therefore succeeds twice, which is what makes DELETE idempotent.
+    /// </summary>
     [HttpDelete("odata/v4/library/Media({key})/$value")]
-    public IActionResult DeleteContent([FromRoute] Guid key) =>
-        data.EntityContent.Remove(key) ? NoContent() : NotFound();
+    public IActionResult DeleteContent([FromRoute] Guid key)
+    {
+        if (data.Media.All(m => m.Id != key))
+        {
+            return NotFound();
+        }
+
+        data.EntityContent.Remove(key);
+        return NoContent();
+    }
 
     /// <summary>
     /// The <c>Sample</c> stream property of an audiobook. Reached through the type cast, because the
@@ -85,6 +100,25 @@ public class MediaStreamController(LibraryData data) : ODataController
         using var buffer = new MemoryStream();
         await Request.Body.CopyToAsync(buffer);
         data.SampleContent[key] = new MediaContent(Request.ContentType ?? DefaultContentType, buffer.ToArray());
+        return NoContent();
+    }
+
+    /// <summary>
+    /// Clears the <c>Sample</c> stream property.
+    ///
+    /// A stream property always exists as part of its entity - its content being absent is a state, not a
+    /// missing resource - so this answers 204 whether or not there was content, and 404 only for an
+    /// unknown audiobook. Spec: OData V4.01 Part 1, "Deleting a Stream Property".
+    /// </summary>
+    [HttpDelete("odata/v4/library/Media({key})/Library.Catalog.Audiobook/Sample")]
+    public IActionResult DeleteSample([FromRoute] Guid key)
+    {
+        if (data.Media.OfType<Audiobook>().All(a => a.Id != key))
+        {
+            return NotFound();
+        }
+
+        data.SampleContent.Remove(key);
         return NoContent();
     }
 
