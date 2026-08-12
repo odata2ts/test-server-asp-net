@@ -123,6 +123,7 @@ public static class EdmModelBuilder
 
         var loan = builder.EntityType<Loan>();
         loan.Property(l => l.LoanedAt).Precision = 7;
+        loan.Property(l => l.LoanedAt).HasImmutable().IsImmutable(true);
         loan.Property(l => l.ReturnedAt).Precision = 7;
         loan.Property(l => l.LateFee).Precision = 5;
         loan.Property(l => l.LateFee).Scale = 2;
