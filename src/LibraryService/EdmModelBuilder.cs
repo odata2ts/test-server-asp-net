@@ -3,6 +3,7 @@ using Library.Circulation;
 using Microsoft.OData.Edm;
 using Microsoft.OData.Edm.Vocabularies;
 using Microsoft.OData.ModelBuilder;
+using Microsoft.OData.ModelBuilder.Core.V1;
 
 namespace LibraryService;
 
@@ -118,8 +119,12 @@ public static class EdmModelBuilder
 
         var member = builder.EntityType<Member>();
         member.Property(m => m.ActiveSince).Precision = 7;
+        member.Property(m => m.ActiveSince).HasComputedDefaultValue().IsComputedDefaultValue(true);
         member.Property(m => m.Balance).Precision = 9;
         member.Property(m => m.Balance).Scale = 2;
+        // Read alone: readable, never writable. The distinction against Computed is what it says about
+        // reading, which is nothing in the computed case.
+        member.Property(m => m.Balance).HasPermissions().HasPermissions(Permission.Read);
 
         var loan = builder.EntityType<Loan>();
         loan.Property(l => l.LoanedAt).Precision = 7;

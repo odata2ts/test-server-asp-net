@@ -38,7 +38,7 @@ cannot express is two attributes: `TypeDefinition` and `Unicode`.
 | Containment, media entities, open types  | complete, streams and `$ref` served in every position         |
 | Navigation properties incl. `Partner`    | complete, both sides related, `OnDelete` intact              |
 | Model metadata detail                    | **2 attributes not expressible**, 6 redundant - see below     |
-| Vocabulary annotations                   | 5 of 7 declared, alternate key addressable via the type cast; `Core.Computed` and `Core.Immutable` are emitted but not enforced |
+| Vocabulary annotations                   | 7 of 7, alternate key addressable via the type cast; the four managed-property terms are emitted but never enforced, and `Core.Permissions` comes out in the wrong shape |
 
 ## What the model builder cannot express
 
@@ -202,7 +202,7 @@ carries `Alias="ISBN"`, which the reference model omits.
 `Container/Media` as in the reference model. `$search` itself works, see the trap about the per-route
 container below.
 
-### `Core.Computed` and `Core.Immutable` — declared, never enforced
+### The managed-property terms — all four declared, none enforced
 
 Both are expressible, in the same two-step shape the builder uses for every vocabulary term
 (`HasComputed().IsComputed(true)`, `HasImmutable().IsImmutable(true)`), and both are emitted as external
@@ -232,6 +232,33 @@ reads `$metadata`, and what this document is for is recording that the runtime d
 
 `LoansController` carries a `Patch` action for no other reason than to make this observable - the term
 only says anything about an update, and the set was read-only before.
+
+`Core.ComputedDefaultValue` on `Member/ActiveSince` and `Core.Permissions` (`Read`) on `Member/Balance`
+complete the set, through the same two-step shape. Neither is enforced either, for the same reason.
+
+**`Core.Permissions` comes out in the wrong shape, though.** The term is typed `Core.Permission` - an
+enum - so its value belongs on the annotation itself, which is what CAP emits:
+
+```xml
+<Annotation Term="Core.Permissions" EnumMember="Core.Permission/Read"/>
+```
+
+The model builder wraps it in a record with a property that repeats the term's name:
+
+```xml
+<Annotation Term="Org.OData.Core.V1.Permissions">
+  <Record><PropertyValue Property="Permissions">
+    <EnumMember>Org.OData.Core.V1.Permission/Read</EnumMember>
+  </PropertyValue></Record>
+</Annotation>
+```
+
+Every `VocabularyTermConfiguration` in the library builds a record, which is right for the terms whose
+type *is* a record and wrong for a term whose type is a primitive or an enum. The consequence is not
+cosmetic: a client reading the vocabulary as written finds no value where one should be, and a
+generated client therefore cannot act on the term at all - odata2ts ignores it, because the annotation
+holds a `Record` rather than one of the constant forms it evaluates. The other three terms are tags,
+whose `Bool` the builder does put in the right place, which is why only this one is affected.
 
 ## Three traps worth knowing
 
@@ -404,10 +431,9 @@ Every feature the reference model declares is served, and every attribute it dec
 the two the model builder cannot express (`TypeDefinition`, `Unicode`) and the six redundant `SRID`
 facets - all of them above, with the reasoning.
 
-Outstanding are two vocabulary terms the reference model gained alongside `Core.Immutable`, neither of
-which is declared here yet: `Core.ComputedDefaultValue` on `Member/ActiveSince` and `Core.Permissions`
-(`Read`) on `Member/Balance`. `Microsoft.OData.ModelBuilder` has `HasComputedDefaultValue` and
-`HasPermissions` for both, so this is a gap in this server, not in the library.
+Every vocabulary annotation the reference model declares is now emitted, `Core.Permissions` in a shape
+of the model builder's own choosing - see above. None of the four managed-property terms changes what
+the runtime accepts, which is the library's position rather than this server's.
 
 Two deviations from the reference EDMX are deliberate and both are forced from below, not chosen:
 
