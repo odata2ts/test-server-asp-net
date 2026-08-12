@@ -459,6 +459,24 @@ public class LoansController(LibraryData data) : ODataController
     [EnableQuery]
     public ActionResult<Copy> GetCopy([FromRoute] Guid key) =>
         data.Loans.FirstOrDefault(l => l.Id == key)?.Copy is { } copy ? copy : NotFound();
+
+    /// <summary>
+    /// Exists so that <c>Core.Immutable</c> on <see cref="Loan.LoanedAt" /> is observable at all: the
+    /// term only says anything about an update, and without this the set was read-only. Nothing here
+    /// treats the annotated property specially - see FEATURE-COVERAGE.md on what Delta&lt;T&gt; does
+    /// with it.
+    /// </summary>
+    public IActionResult Patch([FromRoute] Guid key, Delta<Loan> delta)
+    {
+        var existing = data.Loans.FirstOrDefault(l => l.Id == key);
+        if (existing is null)
+        {
+            return NotFound();
+        }
+
+        delta?.Patch(existing);
+        return Updated(existing);
+    }
 }
 
 public class ReservationsController(LibraryData data) : ODataController

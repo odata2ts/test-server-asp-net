@@ -38,7 +38,7 @@ cannot express is two attributes: `TypeDefinition` and `Unicode`.
 | Containment, media entities, open types  | complete, streams and `$ref` served in every position         |
 | Navigation properties incl. `Partner`    | complete, both sides related, `OnDelete` intact              |
 | Model metadata detail                    | **2 attributes not expressible**, 6 redundant - see below     |
-| Vocabulary annotations                   | 4 of 4, alternate key addressable via the type cast          |
+| Vocabulary annotations                   | 5 of 7 declared, alternate key addressable via the type cast; `Core.Computed` and `Core.Immutable` are emitted but not enforced |
 
 ## What the model builder cannot express
 
@@ -201,6 +201,37 @@ carries `Alias="ISBN"`, which the reference model omits.
 `HasSearchRestrictions().IsSearchable(true)` on the entity set configuration, emitted on
 `Container/Media` as in the reference model. `$search` itself works, see the trap about the per-route
 container below.
+
+### `Core.Computed` and `Core.Immutable` — declared, never enforced
+
+Both are expressible, in the same two-step shape the builder uses for every vocabulary term
+(`HasComputed().IsComputed(true)`, `HasImmutable().IsImmutable(true)`), and both are emitted as external
+targets with the fully qualified term name:
+
+```xml
+<Annotations Target="Library.Catalog.Medium/PopularityScore">
+  <Annotation Term="Org.OData.Core.V1.Computed" Bool="true" />
+</Annotations>
+<Annotations Target="Library.Circulation.Loan/LoanedAt">
+  <Annotation Term="Org.OData.Core.V1.Immutable" Bool="true" />
+</Annotations>
+```
+
+Nothing then acts on either of them. `Delta<T>` records whatever the payload set and `delta.Patch()`
+writes all of it through; neither the deserializer nor the routing layer consults the two terms.
+Measured against the running service:
+
+```
+PATCH /Loans(8888…)  {"LoanedAt": "1999-01-01T00:00:00Z"}   204, and LoanedAt is 1999-01-01
+PATCH /Media(1111…)  {"PopularityScore": 1.0}               204, and PopularityScore is 1.0
+```
+
+So the value is neither dropped nor rejected - it is applied, and the client is told nothing. This is
+left as it is rather than corrected in the controllers: the terms describe an intent to a client that
+reads `$metadata`, and what this document is for is recording that the runtime does not share it.
+
+`LoansController` carries a `Patch` action for no other reason than to make this observable - the term
+only says anything about an update, and the set was read-only before.
 
 ## Three traps worth knowing
 
@@ -369,9 +400,14 @@ key is unknown is treated as an upsert.
 
 ## Not implemented here
 
-Nothing outstanding: every feature the reference model declares is served, and every attribute it
-declares is emitted except the two the model builder cannot express (`TypeDefinition`, `Unicode`) and the
-six redundant `SRID` facets - all of them above, with the reasoning.
+Every feature the reference model declares is served, and every attribute it declares is emitted except
+the two the model builder cannot express (`TypeDefinition`, `Unicode`) and the six redundant `SRID`
+facets - all of them above, with the reasoning.
+
+Outstanding are two vocabulary terms the reference model gained alongside `Core.Immutable`, neither of
+which is declared here yet: `Core.ComputedDefaultValue` on `Member/ActiveSince` and `Core.Permissions`
+(`Read`) on `Member/Balance`. `Microsoft.OData.ModelBuilder` has `HasComputedDefaultValue` and
+`HasPermissions` for both, so this is a gap in this server, not in the library.
 
 Two deviations from the reference EDMX are deliberate and both are forced from below, not chosen:
 
