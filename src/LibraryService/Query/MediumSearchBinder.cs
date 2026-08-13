@@ -16,8 +16,17 @@ namespace LibraryService.Query;
 /// </summary>
 public class MediumSearchBinder : QueryBinder, ISearchBinder
 {
+    /// <summary>
+    /// The one-argument overload, deliberately: <c>Contains(string, StringComparison)</c> has no SQL
+    /// translation, so once the store became a real database it would have turned every <c>$search</c>
+    /// into a 500. Case-insensitivity is instead expressed by lowering both sides in
+    /// <see cref="MatchesTerm" />, which SQLite does translate.
+    /// </summary>
     private static readonly MethodInfo StringContains =
-        typeof(string).GetMethod(nameof(string.Contains), [typeof(string), typeof(StringComparison)])!;
+        typeof(string).GetMethod(nameof(string.Contains), [typeof(string)])!;
+
+    private static readonly MethodInfo StringToLower =
+        typeof(string).GetMethod(nameof(string.ToLower), Type.EmptyTypes)!;
 
     private static readonly MethodInfo EnumerableAny = typeof(Enumerable)
         .GetMethods()
@@ -48,23 +57,23 @@ public class MediumSearchBinder : QueryBinder, ISearchBinder
     private static Expression MatchesTerm(ParameterExpression parameter, string term)
     {
         var medium = Expression.Convert(parameter, typeof(Medium));
-        var needle = Expression.Constant(term, typeof(string));
-        var comparison = Expression.Constant(StringComparison.OrdinalIgnoreCase);
+        var needle = Expression.Constant(term.ToLowerInvariant(), typeof(string));
 
         var titleMatches = Expression.Call(
-            Expression.Property(medium, nameof(Medium.Title)),
+            Lowered(Expression.Property(medium, nameof(Medium.Title))),
             StringContains,
-            needle,
-            comparison);
+            needle);
 
         var keyword = Expression.Parameter(typeof(string), "keyword");
         var keywordMatches = Expression.Call(
             EnumerableAny,
             Expression.Property(medium, nameof(Medium.Keywords)),
             Expression.Lambda<Func<string, bool>>(
-                Expression.Call(keyword, StringContains, needle, comparison),
+                Expression.Call(Lowered(keyword), StringContains, needle),
                 keyword));
 
         return Expression.OrElse(titleMatches, keywordMatches);
     }
+
+    private static Expression Lowered(Expression value) => Expression.Call(value, StringToLower);
 }

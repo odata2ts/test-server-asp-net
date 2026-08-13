@@ -1,20 +1,18 @@
 using Library.Catalog;
 using Library.Circulation;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Spatial;
 
 namespace LibraryService.Data;
 
 /// <summary>
-/// In-memory store with fixed seed data.
+/// The fixed seed data, written into a freshly created database at startup.
 ///
-/// Deliberately not a database: this service exists to probe which OData features an implementation
-/// supports, and a persistence layer would only add its own limitations on top (spatial types, TPH
-/// inheritance, contained entities). Everything is exposed as <see cref="IQueryable{T}" />, so the query
-/// options are executed by LINQ.
-///
-/// The keys are fixed so that consumers can assert against them.
+/// The keys are fixed so that consumers can assert against them, and nothing here is generated: the
+/// database is created empty and filled from this one place, so every process - and every container -
+/// starts from the identical, well-known state.
 /// </summary>
-public sealed class LibraryData
+public static class LibrarySeed
 {
     public static readonly Guid DerProzessId = new("11111111-1111-1111-1111-111111111111");
     public static readonly Guid AudiobookId = new("22222222-2222-2222-2222-222222222222");
@@ -25,36 +23,15 @@ public sealed class LibraryData
     public static readonly Guid CollectorsItemId = new("77777777-7777-7777-7777-777777777777");
     public static readonly Guid LoanId = new("88888888-8888-8888-8888-888888888888");
 
-    public List<Medium> Media { get; } = [];
-    public List<Copy> Copies { get; } = [];
-    public List<Member> Members { get; } = [];
-    public List<Loan> Loans { get; } = [];
-    public List<Reservation> Reservations { get; } = [];
-    public List<IdDocument> IdDocuments { get; } = [];
-    public List<Branch> Branches { get; } = [];
-    public List<Bookmobile> Bookmobiles { get; } = [];
-    public List<PublisherRegistry.Publisher> Publishers { get; } = [];
-    public List<PublisherRegistry.Branch> PublisherBranches { get; } = [];
-
-    public Branch MainBranch => Branches[0];
-
-    /// <summary>
-    /// Content of the media entities, keyed by entity id. Held next to the entities rather than on them:
-    /// <c>Edm.Stream</c> is a link in the payload, never an inline value, so the bytes never travel with
-    /// the entity itself.
-    /// </summary>
-    public Dictionary<Guid, MediaContent> EntityContent { get; } = [];
-
-    /// <summary>Content of the contained audiobook chapters, keyed by audiobook id and chapter id.</summary>
-    public Dictionary<(Guid Audiobook, int Chapter), MediaContent> ChapterContent { get; } = [];
-
-    /// <summary>Value of the <c>Audiobook.Sample</c> stream property, keyed by audiobook id.</summary>
-    public Dictionary<Guid, MediaContent> SampleContent { get; } = [];
-
-    public LibraryData() => Seed();
-
-    private void Seed()
+    /// <summary>Creates the schema and fills it. A no-op if the store already holds data.</summary>
+    public static void Apply(LibraryContext db)
     {
+        db.Database.EnsureCreated();
+        if (db.Media.Any())
+        {
+            return;
+        }
+
         var suhrkamp = new PublisherRegistry.Publisher
         {
             Id = 1,
@@ -69,13 +46,11 @@ public sealed class LibraryData
             Country = "GB",
             Founded = new DateOnly(1935, 7, 30),
         };
-        Publishers.AddRange([suhrkamp, penguin]);
+        db.Publishers.AddRange(suhrkamp, penguin);
 
-        PublisherBranches.AddRange(
-            [
-                new PublisherRegistry.Branch { Id = 1, City = "Berlin", Country = "DE" },
-                new PublisherRegistry.Branch { Id = 2, City = "London", Country = "GB" },
-            ]);
+        db.PublisherBranches.AddRange(
+            new PublisherRegistry.Branch { Id = 1, City = "Berlin", Country = "DE" },
+            new PublisherRegistry.Branch { Id = 2, City = "London", Country = "GB" });
 
         var central = new Branch
         {
@@ -106,15 +81,18 @@ public sealed class LibraryData
             Amenities = Library.Catalog.Amenities.Parking | Library.Catalog.Amenities.KidsArea,
             Population = 120_000,
         };
-        Branches.AddRange([central, suburban]);
+        db.Branches.AddRange(central, suburban);
 
-        Bookmobiles.Add(
+        db.Bookmobiles.Add(
             new Bookmobile
             {
                 Id = 1,
                 LicensePlate = "B-LIB-1",
                 CurrentPosition = GeographyPoint.Create(52.5100, 13.3900),
             });
+
+        // Saved in phases, so that the media rows can go in as one batch of their own below.
+        db.SaveChanges();
 
         var derProzess = new Book
         {
@@ -195,8 +173,19 @@ public sealed class LibraryData
             StorageLocation = central,
             DynamicProperties = { ["Appraisal"] = 12500, ["Insured"] = true },
         };
-        Media.AddRange([derProzess, audiobook, ebook, magazine, journal, dvd, collectors]);
-        suhrkamp.Books.Add(derProzess);
+        // One SaveChanges per medium, which is the only way to fix the order of the rows.
+        //
+        // Within a single SaveChanges EF groups the inserts by entity type - so a batch of all seven came
+        // out ordered Audiobook, Book, CollectorsItem, DVD, ... , i.e. alphabetically by CLR type rather
+        // than as declared here. That order is the one a consumer sees from `/Media` without `$orderby`.
+        // Nothing in OData promises anything about it, but it was stable across every earlier version of
+        // this server, and silently permuting it is not a change worth making for a batch insert of seven
+        // rows into a database that is held in memory.
+        foreach (var medium in new Medium[] { derProzess, audiobook, ebook, magazine, journal, dvd, collectors })
+        {
+            db.Media.Add(medium);
+            db.SaveChanges();
+        }
 
         var copy1 = new Copy
         {
@@ -237,10 +226,12 @@ public sealed class LibraryData
             Medium = dvd,
             Location = suburban,
         };
-        Copies.AddRange([copy1, copy2, copy3]);
-        derProzess.Copies.Add(copy1);
-        derProzess.Copies.Add(copy2);
-        dvd.Copies.Add(copy3);
+        // Same reason as the media above: one at a time, so the rows keep the order declared here.
+        foreach (var copy in new[] { copy1, copy2, copy3 })
+        {
+            db.Copies.Add(copy);
+            db.SaveChanges();
+        }
 
         var alice = new Member
         {
@@ -266,7 +257,7 @@ public sealed class LibraryData
             ActiveSince = new DateTimeOffset(2020, 6, 20, 14, 30, 0, TimeSpan.Zero),
             Balance = 0m,
         };
-        Members.AddRange([alice, bob]);
+        db.Members.AddRange(alice, bob);
 
         var loan = new Loan
         {
@@ -277,21 +268,19 @@ public sealed class LibraryData
             Member = alice,
             Copy = copy1,
         };
-        Loans.Add(loan);
-        alice.Loans.Add(loan);
+        db.Loans.Add(loan);
 
+        // Added to their own sets rather than left to be discovered through Alice's navigation properties.
+        // Every key here is caller-assigned, so a graph walk that finds an entity carrying a key it did not
+        // generate cannot tell a new row from an existing one - and settles on "existing", which turns the
+        // insert into an UPDATE of a row that is not there yet.
         var reservation = new Reservation
         {
             Id = new Guid("99999999-9999-9999-9999-999999999999"),
             ReservedAt = new DateTimeOffset(2026, 7, 20, 8, 15, 0, TimeSpan.Zero),
         };
-        Reservations.Add(reservation);
+        db.Reservations.Add(reservation);
         alice.Reservations.Add(reservation);
-
-        EntityContent[EBookId] = new MediaContent("application/epub+zip", "EPUB placeholder for tests"u8.ToArray());
-        ChapterContent[(AudiobookId, 1)] = new MediaContent("audio/mpeg", "chapter one audio"u8.ToArray());
-        ChapterContent[(AudiobookId, 2)] = new MediaContent("audio/mpeg", "chapter two audio"u8.ToArray());
-        SampleContent[AudiobookId] = new MediaContent("audio/mpeg", "sample audio"u8.ToArray());
 
         var idDocument = new IdDocument
         {
@@ -299,10 +288,30 @@ public sealed class LibraryData
             Scan = [0x01, 0x02, 0x03, 0x04],
             UploadedAt = new DateTimeOffset(2015, 1, 5, 9, 5, 0, TimeSpan.Zero),
         };
-        IdDocuments.Add(idDocument);
+        db.IdDocuments.Add(idDocument);
         alice.IdDocument = idDocument;
-    }
-}
 
-/// <summary>A stream's bytes together with the media type they were stored with.</summary>
-public sealed record MediaContent(string ContentType, byte[] Bytes);
+        db.Contents.AddRange(
+            Content(ContentSlot.Entity, EBookId, "application/epub+zip", "EPUB placeholder for tests"u8),
+            Content(ContentSlot.Chapter, AudiobookId, "audio/mpeg", "chapter one audio"u8, 1),
+            Content(ContentSlot.Chapter, AudiobookId, "audio/mpeg", "chapter two audio"u8, 2),
+            Content(ContentSlot.Sample, AudiobookId, "audio/mpeg", "sample audio"u8));
+
+        db.SaveChanges();
+    }
+
+    private static StoredContent Content(
+        ContentSlot slot,
+        Guid ownerId,
+        string contentType,
+        ReadOnlySpan<byte> bytes,
+        int part = 0) =>
+        new()
+        {
+            OwnerId = ownerId,
+            Slot = slot,
+            Part = part,
+            ContentType = contentType,
+            Bytes = bytes.ToArray(),
+        };
+}

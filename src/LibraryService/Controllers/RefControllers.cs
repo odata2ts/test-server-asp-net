@@ -2,6 +2,7 @@ using Library.Circulation;
 using LibraryService.Data;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.OData.Routing.Controllers;
+using Microsoft.EntityFrameworkCore;
 
 namespace LibraryService.Controllers;
 
@@ -13,13 +14,13 @@ namespace LibraryService.Controllers;
 /// a collection-valued navigation property takes <c>POST</c> to add and <c>DELETE</c> with <c>$id</c> to
 /// remove, a single-valued one takes <c>PUT</c> to set and plain <c>DELETE</c> to clear.
 /// </summary>
-public class MemberRefController(LibraryData data) : ODataController
+public class MemberRefController(LibraryContext db) : ODataController
 {
     /// <summary>The links of a collection-valued navigation property.</summary>
     [HttpGet("odata/v4/library/Members({key})/Loans/$ref")]
     public IActionResult GetLoanRefs([FromRoute] int key)
     {
-        var member = data.Members.FirstOrDefault(m => m.Id == key);
+        var member = db.Members.Include(m => m.Loans).FirstOrDefault(m => m.Id == key);
         if (member is null)
         {
             return NotFound();
@@ -40,14 +41,14 @@ public class MemberRefController(LibraryData data) : ODataController
     [HttpPost("odata/v4/library/Members({key})/Loans/$ref")]
     public IActionResult AddLoanRef([FromRoute] int key, [FromBody] ODataReference reference)
     {
-        var member = data.Members.FirstOrDefault(m => m.Id == key);
+        var member = db.Members.Include(m => m.Loans).FirstOrDefault(m => m.Id == key);
         if (member is null)
         {
             return NotFound();
         }
 
         if (!TryResolveKey(reference.ODataId, out var loanId)
-            || data.Loans.FirstOrDefault(l => l.Id == loanId) is not { } loan)
+            || db.Loans.FirstOrDefault(l => l.Id == loanId) is not { } loan)
         {
             return BadRequest("The referenced loan does not exist.");
         }
@@ -56,6 +57,7 @@ public class MemberRefController(LibraryData data) : ODataController
         {
             member.Loans.Add(loan);
             loan.Member = member;
+            db.SaveChanges();
         }
 
         return NoContent();
@@ -65,7 +67,7 @@ public class MemberRefController(LibraryData data) : ODataController
     [HttpDelete("odata/v4/library/Members({key})/Loans/$ref")]
     public IActionResult DeleteLoanRef([FromRoute] int key, [FromQuery(Name = "$id")] string? id)
     {
-        var member = data.Members.FirstOrDefault(m => m.Id == key);
+        var member = db.Members.Include(m => m.Loans).FirstOrDefault(m => m.Id == key);
         if (member is null)
         {
             return NotFound();
@@ -77,8 +79,11 @@ public class MemberRefController(LibraryData data) : ODataController
             return NotFound();
         }
 
+        // Unlinks the loan without deleting it, which is why the foreign key behind Member.Loans is
+        // mapped as optional even though the association carries a cascading delete.
         member.Loans.Remove(loan);
         loan.Member = null;
+        db.SaveChanges();
         return NoContent();
     }
 
@@ -86,7 +91,7 @@ public class MemberRefController(LibraryData data) : ODataController
     [HttpGet("odata/v4/library/Members({key})/IdDocument/$ref")]
     public IActionResult GetIdDocumentRef([FromRoute] int key)
     {
-        var member = data.Members.FirstOrDefault(m => m.Id == key);
+        var member = db.Members.Include(m => m.IdDocument).FirstOrDefault(m => m.Id == key);
         if (member is null)
         {
             return NotFound();
@@ -108,32 +113,34 @@ public class MemberRefController(LibraryData data) : ODataController
     [HttpPut("odata/v4/library/Members({key})/IdDocument/$ref")]
     public IActionResult PutIdDocumentRef([FromRoute] int key, [FromBody] ODataReference reference)
     {
-        var member = data.Members.FirstOrDefault(m => m.Id == key);
+        var member = db.Members.FirstOrDefault(m => m.Id == key);
         if (member is null)
         {
             return NotFound();
         }
 
         if (!TryResolveKey(reference.ODataId, out var documentId)
-            || data.IdDocuments.FirstOrDefault(d => d.Id == documentId) is not { } document)
+            || db.IdDocuments.FirstOrDefault(d => d.Id == documentId) is not { } document)
         {
             return BadRequest("The referenced document does not exist.");
         }
 
         member.IdDocument = document;
+        db.SaveChanges();
         return NoContent();
     }
 
     [HttpDelete("odata/v4/library/Members({key})/IdDocument/$ref")]
     public IActionResult DeleteIdDocumentRef([FromRoute] int key)
     {
-        var member = data.Members.FirstOrDefault(m => m.Id == key);
+        var member = db.Members.Include(m => m.IdDocument).FirstOrDefault(m => m.Id == key);
         if (member is null)
         {
             return NotFound();
         }
 
         member.IdDocument = null;
+        db.SaveChanges();
         return NoContent();
     }
 

@@ -5,7 +5,8 @@ How far ASP.NET Core OData reproduces
 where it cannot.
 
 Measured against **.NET 10.0.10** (the current LTS) with **Microsoft.AspNetCore.OData 9.5.0**
-(→ `Microsoft.OData.ModelBuilder` 2.0.0, `Microsoft.OData.Edm`/`Core` 8.4.0). Every statement below was
+(→ `Microsoft.OData.ModelBuilder` 2.0.0, `Microsoft.OData.Edm`/`Core` 8.4.0) and
+**Microsoft.EntityFrameworkCore.Sqlite 10.0.11**. Every statement below was
 verified against the emitted `$metadata` and against the running service - by diffing the metadata
 mechanically, not by reading it. Claims about what the *libraries* can or cannot do were checked against
 their actual API surface by reflection and against isolated probe models, not inferred from this
@@ -14,6 +15,13 @@ service's behaviour.
 The reference model is a deliberately feature-dense probe of the OData spec, not a benchmark. A server
 does not have to implement all of OData. So this document separates *what the library cannot express* from
 *what this implementation simply does not do*.
+
+Since the store became a real database (SQLite, in memory, through EF Core), there is a third thing to
+separate out: *what the persistence layer costs*. The query options are no longer a LINQ-to-Objects
+exercise - `[EnableQuery]` hands them to a provider that has to translate them to SQL - so a handful of
+them now behave differently for reasons that have nothing to do with OData. Those are collected under
+[What the persistence layer costs](#what-the-persistence-layer-costs), which also records the one place
+where the change turned out to *fix* a conformance defect rather than cost anything.
 
 ## Summary
 
@@ -39,6 +47,8 @@ cannot express is two attributes: `TypeDefinition` and `Unicode`.
 | Navigation properties incl. `Partner`    | complete, both sides related, `OnDelete` intact              |
 | Model metadata detail                    | **2 attributes not expressible**, 6 redundant - see below     |
 | Vocabulary annotations                   | 7 of 7, alternate key addressable via the type cast; the four managed-property terms are emitted but never enforced, and `Core.Permissions` comes out in the wrong shape |
+| Query options against a real database     | all translate to SQL; `Edm.Date`/`Edm.TimeOfDay` need a replacement filter binder, and the date-part functions over `Edm.DateTimeOffset` are the one casualty - see below |
+| Null in `$filter`                        | conformant, but only over a query provider - bound over a `List<T>` the library applies three-valued logic, which OData does not specify for `ne` or a negated comparison |
 
 ## What the model builder cannot express
 
@@ -153,6 +163,12 @@ POST /Media/$query          body: the same 8 KB filter         200
 Expressible via `[ConcurrencyCheck]`, emitted, and effective: `Copy` answers with `@odata.etag` in the
 payload.
 
+Since the store became a database the token also does something below the protocol: EF puts the original
+`Condition` into the `WHERE` clause of every `UPDATE`, so two writers racing on the same copy collide for
+real. The HTTP half is still missing, and it is missing the same way it was before - the controllers never
+read `If-Match`, so a request carrying a stale ETag is accepted and no `412` is ever returned. The
+annotation is honest about the model; the enforcement is one layer short.
+
 ### `Partner` on both sides of every association
 
 All six `Partner` attributes are emitted - `Medium/Copies` ↔ `Copy/Medium`, `Member/Loans` ↔
@@ -260,6 +276,166 @@ generated client therefore cannot act on the term at all - odata2ts ignores it, 
 holds a `Record` rather than one of the constant forms it evaluates. The other three terms are tags,
 whose `Bool` the builder does put in the right place, which is why only this one is affected.
 
+## What the persistence layer costs
+
+The store is SQLite, held in memory, through EF Core. That was a deliberate change: with the entity sets
+exposed as `List<T>`, `[EnableQuery]` applied every query option in LINQ to Objects, where nothing can
+fail to translate and nothing can be answered wrongly. Against a database the options have to become SQL,
+which is what a consumer of a real OData service meets - and what it costs is worth writing down.
+
+The short version: **every query option in the reference model's reach still works**, one family of
+functions excepted; the things that had to be given up are all *representation*, not protocol; and one
+thing got better, in that `$filter` over a null now follows the spec where it did not before.
+Verified by running the same 61 reads and 50 mutations against the previous in-memory build and this one
+and diffing every response: 57 of 61 reads and 49 of 50 mutations are byte-identical, and each difference
+is accounted for below.
+
+### What SQLite cannot store, and what it was traded for
+
+Four types in the reference model have no faithful SQLite column. Each goes through a value converter in
+[`Data/ValueConversions.cs`](src/LibraryService/Data/ValueConversions.cs):
+
+| Type                                              | Stored as                              | What it costs                                                                                                                                                                                                |
+|---------------------------------------------------|----------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `Edm.Geography*` / `Edm.Geometry*` (6 properties) | WKT text                               | `geo.*` functions can never translate. They did not work over LINQ to Objects either, so nothing is lost in practice.                                                                                        |
+| `Edm.Decimal` (`Balance`, `LateFee`)              | integer scaled by the declared `Scale` | nothing - see below                                                                                                                                                                                          |
+| `Edm.DateTimeOffset` (5 properties)               | UTC ticks                              | the offset, and the date-part functions (`hour()`, `year()`, `now()`) - see below. Only the instant survives, so `+02:00` reads back as the same moment in UTC. Every timestamp in the model is UTC already. |
+| `Edm.Duration`                                    | ticks                                  | the date-part functions, as above                                                                                                                                                                            |
+| open type's dynamic properties, `Edm.Untyped`     | JSON                                   | they can never appear in `$filter` or `$orderby`                                                                                                                                                             |
+
+`Microsoft.Spatial` is the interesting one: EF Core's spatial support is NetTopologySuite-only and would
+additionally want the SpatiaLite native extension, so the type system OData itself speaks has no EF
+provider at all. WKT round-trips it exactly, SRID included, and `$metadata` and every payload are
+unchanged.
+
+**Decimal deserves the detail**, because the obvious mapping is the dangerous one. SQLite has no decimal
+type. Scaling to an integer keeps the value exact and both work, and it turns the
+`Precision`/`Scale` facets the model already declares into the converter's contract. `DateTimeOffset` and
+`Duration` went the same way for the same reason, except that EF refused to translate those outright
+instead of answering wrongly - and there the trade is not free, since the extraction functions go with it.
+
+### `Edm.Date` and `Edm.TimeOfDay` are not compared as values - which takes a replacement binder
+
+The stock filter binder compares neither type directly. It takes both operands apart and rebuilds them as
+a single number, then compares those:
+
+```
+$filter=PublicationDate gt 2000-01-01  ->  WHERE CAST(strftime('%Y', "PublicationDate") AS INTEGER) * 10000
+                                               + CAST(strftime('%m', …) AS INTEGER) * 100
+                                               + CAST(strftime('%d', …) AS INTEGER) > @p
+
+$filter=OpensAt gt 09:30:00            ->  (long)"OpensAt".Hour * 36000000000 + …   no translation, 500
+```
+
+Over `List<T>` that is merely roundabout. Over a database the date form still answers correctly but can
+never use an index - the column never appears on its own - and the time-of-day form has no SQL at all, so
+the request failed outright. Not a storage problem: converting the column to ticks was tried first and
+does not help, because the arithmetic is built from `.Hour`/`.Minute` before the provider ever sees it.
+
+The behaviour is not configurable - `ExpressionBinderHelper.CreateDateBinaryExpression` and its time
+counterpart are internal - so
+[`Query/DateComparisonBinder.cs`](src/LibraryService/Query/DateComparisonBinder.cs) replaces the filter
+binder and restates both as one comparison in the property's own CLR type. The approach comes from
+[OData/AspNetCoreOData#1473](https://github.com/OData/AspNetCoreOData/issues/1473), where the same
+arithmetic shows up as `DATEPART` against SQL Server:
+
+```
+WHERE "m"."PublicationDate" > '2000-01-01'
+WHERE "b"."OpensAt" > '09:30:00'
+```
+
+Both are sargable now, and `$filter` on `Edm.TimeOfDay` works. Every comparison operator and both
+boundaries were checked against the in-memory build, which is the reference for what the answers should
+be. The binder stands down when null propagation is on - a LINQ-to-Objects source - where the base
+implementation's three-valued `bool?` is what the surrounding expression expects.
+
+### The date-part functions over `Edm.DateTimeOffset` and `Edm.Duration`
+
+The one place where a storage decision is visible in the protocol surface:
+
+```
+GET /Loans?$filter=hour(LoanedAt) eq 10               500   (200 over the in-memory store)
+GET /Loans?$filter=year(LoanedAt) eq 2026             500
+GET /Loans?$filter=LoanedAt lt now()                  500
+GET /Loans?$filter=date(LoanedAt) eq 2026-06-01       200
+GET /Loans?$filter=LoanedAt gt 2020-01-01T00:00:00Z   200
+GET /Loans?$orderby=LoanedAt                          200
+```
+
+`LoanedAt` is stored as an integer tick count, and no SQL pulls an hour back out of one. The alternative
+is worse rather than better, and was measured rather than assumed: with EF's default mapping **every one**
+of those requests fails, comparison and `$orderby` included, and the timestamps serialise differently as
+well. Ticks buy the operators the reference model exercises and cost the extraction functions.
+`Edm.Date` is unaffected - `year(PublicationDate)` works - because a date needs no converter.
+
+Everything else translates: `$apply` with `groupby` and `aggregate`, `$compute`, nested `$expand` with its
+own `$filter`/`$orderby`/`$top`, `$orderby` across a navigation property, `$filter` on a complex property,
+`Keywords/$count`, `Keywords/any(...)`, enum `eq` and flags `has`, `isof`, and every string function the
+model reaches.
+
+### A failing query option must fail loudly - which took a middleware
+
+Worth recording, because the default behaviour is the worst possible one. OData serialises the response
+while it enumerates the `IQueryable`, straight onto the network. Over the in-memory store that enumeration
+could not fail. Over a database it can, and by the time EF throws, the `200` and the opening bytes are
+already sent:
+
+```
+HTTP/1.1 200 OK
+{"@odata.context":"…#Branches(Name)","value":[          ← and nothing more
+```
+
+A truncated body under a success status, which makes "this server cannot answer that" indistinguishable
+from "no rows matched" - the one failure mode a server that exists to be asserted against must not have.
+`Program.cs` therefore buffers the response and turns an escaped exception into an honest `500`. It does
+not make anything translate; it only ensures a limit is visible. The `500`s quoted above are it working.
+
+### What the database gained
+
+Not everything is a cost. Three things stopped being decoration:
+
+- **Cascading delete happens.** `DELETE /Media(<id>)` now removes the medium's copies, because the
+  reference model's cascade is declared on the relational side too. Previously the copies stayed behind,
+  reachable at `/Copies` with a required `Medium` that no longer existed.
+- **`Copy.Condition` is a real concurrency token.** EF puts the original value into the `WHERE` of every
+  `UPDATE`, so two writers racing on one copy genuinely collide. Note what this does *not* add: the
+  controllers still never check `If-Match`, so the HTTP precondition is unenforced and a stale ETag is
+  still accepted - see [`Core.OptimisticConcurrency`](#coreoptimisticconcurrency).
+- **`$batch` sub-requests each get their own unit of work**, since the `DbContext` is scoped. A `PATCH` in
+  one sub-request is visible to a `GET` in the next, and each commits on its own.
+
+### The two payload differences
+
+Everything else is byte-identical to the in-memory build. These two are not:
+
+|                                    | before   | now    | why                                                                                                                                                                                                       |
+|------------------------------------|----------|--------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `Member.Balance` for a whole value | `0`      | `0.00` | The scaled-integer converter reconstructs at the declared `Scale`, so a decimal always carries it. `12.50` was already `12.50`; it is `0` that was inconsistent, because the seed wrote the literal `0m`. |
+| `GET` a copy of a deleted medium   | `200`    | `404`  | The cascade above.                                                                                                                                                                                        |
+
+Collection order without `$orderby` is *not* among them, though it took work to keep: EF groups the
+inserts of one `SaveChanges` by entity type, which permuted `/Media` into alphabetical order by CLR type.
+Nothing in OData promises an order here, but consumers had a stable one, so
+[`LibrarySeed`](src/LibraryService/Data/LibrarySeed.cs) inserts media and copies one at a time to preserve
+it.
+
+### A trap the change tracker sets
+
+Every key in this model is caller-assigned - fixed GUIDs in the seed, `max(Id) + 1` for members - because
+a test server whose keys depend on insert order is one nobody can assert against. That removes the signal
+EF uses to tell a new entity from an existing one:
+
+```csharp
+var reservation = new Reservation { Id = Guid.NewGuid(), … };
+member.Reservations.Add(reservation);   // reached only through a tracked entity
+db.SaveChanges();                       // → UPDATE … WHERE Id = … → 0 rows → throws
+```
+
+Reaching a new entity solely through a tracked entity's navigation property is not enough. EF finds it
+during change detection, sees a key it did not generate, concludes the row exists, and issues an `UPDATE`
+that matches nothing. The entity has to be `Add`ed to its own set; linking it is a second step. This bit
+both the seed and `Reserve`, and it is silent until `SaveChanges` runs.
+
 ## Three traps worth knowing
 
 Both cost real time and neither produces an error - the service builds and runs, it just does the wrong
@@ -307,33 +483,38 @@ an attribute the reference EDMX does not - a library defect worked around, not a
 
 Everything below was executed against the running service.
 
-| Request                                       | Result |
-| --------------------------------------------- | ------ |
-| `$metadata`, service document                  | 200    |
-| CRUD on entity sets (`POST`/`PATCH`/`DELETE`)  | 201 / 204 / 204 |
-| Composite key `Copies(MediumId=…,InventoryNumber=…)` | 200 / 204 / 204 on GET / PATCH / DELETE |
-| Second copy with an existing composite key      | 409    |
-| Singleton `MainBranch`                         | 200    |
-| `$filter`, `$orderby`, `$top`, `$skip`, `$select`, `$expand`, `$count` | 200 |
-| `$search` (with binder)                        | filters correctly |
-| `POST <resource>/$query` (query in the body)   | 200, options applied; a query too long for the URL succeeds |
-| `$apply=groupby((Language))`                   | 200, groups correctly |
-| `$compute`                                     | 200    |
-| `$batch` (JSON)                                | 200    |
-| Type-cast segment `/Media/Library.Catalog.Book` | 200   |
-| Containment via type cast                      | 200    |
-| All 14 functions, all 14 actions               | 200 / 201 / 204 as declared |
-| `GET /Media/Library.Catalog.PrintMedium(ISBN='…')` (alternate key) | 200 |
-| `GET /Media(ISBN='…')` (alternate key without the type cast) | 404 |
-| `GET`/`PUT`/`DELETE` `/Media(<id>)/$value` (media entity stream) | 200 / 204 / 204 |
-| `GET`/`PUT`/`DELETE` `/Media(<id>)/Library.Catalog.Audiobook/Sample` (stream property) | 200 / 204 / 204 |
-| `GET`/`PUT` `…/Chapters(<id>)/$value` (contained media entity) | 200 / 204 |
-| `$ref` on a collection-valued navigation property | 200 / 204 |
-| `$ref` on a single-valued navigation property  | 200 / 204 |
-| Deep insert (`POST` with nested entities)      | 201, children addressable in their own set |
-| Delta payload (`PATCH` on the collection)      | 200, update + removal + upsert applied |
-| `@odata.bind` / `{"@id"}` on create and update | 201 / 204, link re-pointed, store intact |
-| binding to `null`                              | 204, link cleared |
+| Request                                                                                    | Result                                                           |
+|--------------------------------------------------------------------------------------------|------------------------------------------------------------------|
+| `$metadata`, service document                                                              | 200                                                              |
+| CRUD on entity sets (`POST`/`PATCH`/`DELETE`)                                              | 201 / 204 / 204                                                  |
+| `PATCH /Media(<id>)` without `@odata.type`                                                 | 400 - the set's declared type is abstract, see below             |
+| Composite key `Copies(MediumId=…,InventoryNumber=…)`                                       | 200 / 204 / 204 on GET / PATCH / DELETE                          |
+| Second copy with an existing composite key                                                 | 409                                                              |
+| Singleton `MainBranch`                                                                     | 200                                                              |
+| `$filter`, `$orderby`, `$top`, `$skip`, `$select`, `$expand`, `$count`                     | 200, translated to SQL                                           |
+| `$filter` on `Edm.Date` / `Edm.TimeOfDay`                                                  | 200, one direct comparison - needs the replacement filter binder |
+| `$filter=hour(LoanedAt) eq 10` and the other date-part functions over `Edm.DateTimeOffset` | 500 - the tick storage has no hour to extract                    |
+| `$apply`, `$compute`, nested `$expand` options, `$orderby` across a navigation property    | 200, translated to SQL                                           |
+| `$search` (with binder)                                                                    | filters correctly                                                |
+| `POST <resource>/$query` (query in the body)                                               | 200, options applied; a query too long for the URL succeeds      |
+| `$apply=groupby((Language))`                                                               | 200, groups correctly                                            |
+| `$compute`                                                                                 | 200                                                              |
+| `$batch` (JSON)                                                                            | 200                                                              |
+| Type-cast segment `/Media/Library.Catalog.Book`                                            | 200                                                              |
+| Containment via type cast                                                                  | 200                                                              |
+| All 14 functions, all 14 actions                                                           | 200 / 201 / 204 as declared                                      |
+| `GET /Media/Library.Catalog.PrintMedium(ISBN='…')` (alternate key)                         | 200                                                              |
+| `GET /Media(ISBN='…')` (alternate key without the type cast)                               | 404                                                              |
+| `GET`/`PUT`/`DELETE` `/Media(<id>)/$value` (media entity stream)                           | 200 / 204 / 204                                                  |
+| `GET`/`PUT`/`DELETE` `/Media(<id>)/Library.Catalog.Audiobook/Sample` (stream property)     | 200 / 204 / 204                                                  |
+| `GET`/`PUT` `…/Chapters(<id>)/$value` (contained media entity)                             | 200 / 204                                                        |
+| `$ref` on a collection-valued navigation property                                          | 200 / 204                                                        |
+| `$ref` on a single-valued navigation property                                              | 200 / 204                                                        |
+| Deep insert (`POST` with nested entities)                                                  | 201, children addressable in their own set                       |
+| `DELETE` a medium that has copies                                                          | 204, copies cascade away with it                                 |
+| Delta payload (`PATCH` on the collection)                                                  | 200, update + removal + upsert applied                           |
+| `@odata.bind` / `{"@id"}` on create and update                                             | 201 / 204, link re-pointed, store intact                         |
+| binding to `null`                                                                          | 204, link cleared                                                |
 
 ### Media entity streams
 
@@ -368,6 +549,31 @@ elements" - a store that could not be read from any more.
 Both cardinalities are served, and they differ in the verbs as the spec requires: a collection-valued
 navigation property takes `POST` to add and `DELETE` with `$id` to remove, a single-valued one takes `PUT`
 to set and plain `DELETE` to clear. A reference to a non-existent entity is refused with `400`.
+
+### Patching an entity set whose declared type is abstract
+
+`Media` is declared as `Library.Catalog.Medium`, which is abstract, so every entity in it is of a derived
+type - and OData JSON requires the `@odata.type` annotation whenever an instance's type is derived from
+the declared one. A partial update therefore has to name the type it is patching, even though the target
+entity already exists and its type is not in doubt:
+
+```
+PATCH /Media(<id>)   {"Title": "Neu"}                                          400
+PATCH /Media(<id>)   {"@odata.type": "#Library.Catalog.Book", "Title": "Neu"}  204
+```
+
+Worth knowing when generating a client: a `PATCH` builder that emits only the changed properties produces
+the first shape, and against this entity set that is not a valid payload. The other entity sets are
+declared with concrete types and take an untyped body.
+
+The 400 is this implementation's, not the library's. Without the annotation the deserializer has no type
+to construct and model binding hands the action a **null** delta, with no error of its own - so the shape
+of the failure is a choice each implementation makes. Dereferencing it answers 500 to what is really a
+malformed request; skipping it silently answers 204 to an update that was never applied, which is worse.
+All five `PATCH` actions here take a nullable delta and answer 400, except where a null delta is still
+usable: on `Copy` and `Member` the deserializer also rejects a body that binds a navigation to null, and
+those two read the binding out of the raw body themselves, so they answer 400 only when there is no
+binding either.
 
 ### Deep insert
 
