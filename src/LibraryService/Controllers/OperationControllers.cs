@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.OData.Formatter;
 using Microsoft.AspNetCore.OData.Query;
 using Microsoft.AspNetCore.OData.Routing.Attributes;
 using Microsoft.AspNetCore.OData.Routing.Controllers;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.OData.Edm;
 
 namespace LibraryService.Controllers;
@@ -17,19 +18,22 @@ namespace LibraryService.Controllers;
 /// The implementations are deliberately thin. Their job is to prove that each operation of the reference
 /// model is callable and answers with a payload of the declared shape - not to be a library backend.
 /// </summary>
-public class LibraryOperationsController(LibraryData data) : ODataController
+public class LibraryOperationsController(LibraryContext db) : ODataController
 {
     [HttpGet("odata/v4/library/TotalMediaCount()")]
-    public long TotalMediaCount() => data.Media.Count;
+    public long TotalMediaCount() => db.Media.Count();
 
     [HttpGet("odata/v4/library/AllLanguages()")]
     public IEnumerable<string> AllLanguages() =>
-        data.Media.Select(m => m.Language).OfType<string>().Distinct().Order();
+        db.Media.Select(m => m.Language).OfType<string>().Distinct().Order();
 
     [HttpGet("odata/v4/library/LoanStatistics(Period={period})")]
     public LoanStats LoanStatistics([FromODataUri] DateRange? period)
     {
-        var loans = data.Loans.AsEnumerable();
+        // Materialised first on purpose: the period is compared as a DateOnly against the date part of a
+        // DateTimeOffset, which SQLite cannot do. This is an operation, not a query option - nothing about
+        // the reference model is being probed by pushing it into SQL.
+        var loans = db.Loans.AsEnumerable();
         if (period?.From is { } from)
         {
             loans = loans.Where(l => DateOnly.FromDateTime(l.LoanedAt.Date) >= from);
@@ -50,11 +54,11 @@ public class LibraryOperationsController(LibraryData data) : ODataController
 
     [HttpGet("odata/v4/library/StatsPerBranch()")]
     public IEnumerable<BranchStats> StatsPerBranch() =>
-        data.Branches.Select(b => new BranchStats { BranchId = b.Id, LoanCount = b.Id });
+        db.Branches.Select(b => new BranchStats { BranchId = b.Id, LoanCount = b.Id });
 
     [HttpGet("odata/v4/library/MostReadMedium()")]
     public ActionResult<Medium> MostReadMedium() =>
-        data.Media.OrderByDescending(m => m.PopularityScore ?? 0).FirstOrDefault() is { } medium
+        db.Media.OrderByDescending(m => m.PopularityScore ?? 0).FirstOrDefault() is { } medium
             ? medium
             : NotFound();
 
@@ -62,7 +66,7 @@ public class LibraryOperationsController(LibraryData data) : ODataController
     [HttpGet("odata/v4/library/NewReleases()")]
     [EnableQuery]
     public IQueryable<Medium> NewReleases() =>
-        data.Media.Where(m => m.PublicationDate >= new DateOnly(2020, 1, 1)).AsQueryable();
+        db.Media.Where(m => m.PublicationDate >= new DateOnly(2020, 1, 1)).AsQueryable();
 
     /// <summary>
     /// Both overloads of <c>Search</c> - with and without <c>MaxResults</c> - in one action.
@@ -100,7 +104,7 @@ public class LibraryOperationsController(LibraryData data) : ODataController
         parameters.ContainsKey("Date") ? NoContent() : BadRequest("Parameter 'Date' is required.");
 
     [HttpPost("odata/v4/library/NextInventoryNumber")]
-    public int NextInventoryNumber() => data.Copies.Count == 0 ? 1 : data.Copies.Max(c => c.InventoryNumber) + 1;
+    public int NextInventoryNumber() => db.Copies.Any() ? db.Copies.Max(c => c.InventoryNumber) + 1 : 1;
 
     [HttpPost("odata/v4/library/CleanUpKeywords")]
     public IEnumerable<string> CleanUpKeywords([FromBody] ODataActionParameters parameters)
@@ -109,7 +113,7 @@ public class LibraryOperationsController(LibraryData data) : ODataController
             ? list.ToHashSet()
             : [];
 
-        return data.Media.SelectMany(m => m.Keywords).Distinct().Where(k => !obsolete.Contains(k)).Order();
+        return db.Media.AsEnumerable().SelectMany(m => m.Keywords).Distinct().Where(k => !obsolete.Contains(k)).Order();
     }
 
     [HttpPost("odata/v4/library/YearEndClosing")]
@@ -117,12 +121,12 @@ public class LibraryOperationsController(LibraryData data) : ODataController
         new()
         {
             Year = parameters.TryGetValue("Year", out var year) ? Convert.ToInt32(year) : DateTime.UtcNow.Year,
-            TotalLoans = data.Loans.Count,
-            TotalLateFees = data.Loans.Sum(l => l.LateFee ?? 0m),
+            TotalLoans = db.Loans.Count(),
+            TotalLateFees = db.Loans.Sum(l => l.LateFee) ?? 0m,
         };
 
     [HttpPost("odata/v4/library/RunOverdueNotices")]
-    public IEnumerable<OverdueNotice> RunOverdueNotices() => data.Loans.Select(Notice);
+    public IEnumerable<OverdueNotice> RunOverdueNotices() => db.Loans.AsEnumerable().Select(Notice);
 
     [HttpPost("odata/v4/library/AcquireCollectorsItem")]
     public ActionResult<Medium> AcquireCollectorsItem([FromBody] ODataActionParameters parameters)
@@ -138,14 +142,15 @@ public class LibraryOperationsController(LibraryData data) : ODataController
             Title = name,
             ExtraData = parameters.TryGetValue("Description", out var description) ? description : null,
         };
-        data.Media.Add(item);
+        db.Media.Add(item);
+        db.SaveChanges();
         return Created(item);
     }
 
     [HttpPost("odata/v4/library/RunStockCheck")]
     [EnableQuery]
     public IQueryable<Medium> RunStockCheck() =>
-        data.Media.Where(m => m.Copies.Count == 0).AsQueryable();
+        db.Media.Where(m => m.Copies.Count == 0).AsQueryable();
 
     internal static OverdueNotice Notice(Loan loan) =>
         new()
@@ -155,22 +160,27 @@ public class LibraryOperationsController(LibraryData data) : ODataController
             CreatedAt = DateTimeOffset.UtcNow,
         };
 
-    private IEnumerable<Medium> Matching(string term) =>
-        data.Media.Where(m => m.Title.Contains(term, StringComparison.OrdinalIgnoreCase));
+    /// <summary>
+    /// Case-insensitive title match. <c>StringComparison.OrdinalIgnoreCase</c> has no SQL translation, so
+    /// the comparison is spelled out in a form SQLite does translate - <c>LIKE</c> is case-insensitive for
+    /// ASCII by itself, and lowering both sides makes that explicit rather than incidental.
+    /// </summary>
+    private IQueryable<Medium> Matching(string term) =>
+        db.Media.Where(m => m.Title.ToLower().Contains(term.ToLower()));
 }
 
 /// <summary>Operations bound to <c>Library.Catalog.Medium</c>, single instance and collection.</summary>
-public class MediaOperationsController(LibraryData data) : ODataController
+public class MediaOperationsController(LibraryContext db) : ODataController
 {
     [HttpGet("odata/v4/library/Media({key})/Library.Circulation.LoanMetrics()")]
     public ActionResult<MediumStats> LoanMetrics([FromRoute] Guid key)
     {
-        if (data.Media.All(m => m.Id != key))
+        if (db.Media.All(m => m.Id != key))
         {
             return NotFound();
         }
 
-        var loans = data.Loans.Count(l => l.Copy?.MediumId == key);
+        var loans = db.Loans.Count(l => l.Copy != null && l.Copy.MediumId == key);
         return new MediumStats
         {
             TotalLoanCount = loans,
@@ -180,68 +190,75 @@ public class MediaOperationsController(LibraryData data) : ODataController
 
     [HttpGet("odata/v4/library/Media({key})/Library.Circulation.AvailableCopy()")]
     public ActionResult<Copy> AvailableCopy([FromRoute] Guid key) =>
-        data.Copies.FirstOrDefault(c => c.MediumId == key && c.Status == AvailabilityStatus.Available) is { } copy
+        db.Copies.FirstOrDefault(c => c.MediumId == key && c.Status == AvailabilityStatus.Available) is { } copy
             ? copy
             : NotFound();
 
     [HttpGet("odata/v4/library/Media({key})/Library.Circulation.AvailableCopies()")]
     [EnableQuery]
     public IQueryable<Copy> AvailableCopies([FromRoute] Guid key) =>
-        data.Copies.Where(c => c.MediumId == key && c.Status == AvailabilityStatus.Available).AsQueryable();
+        db.Copies.Where(c => c.MediumId == key && c.Status == AvailabilityStatus.Available).AsQueryable();
 
     /// <summary>Second overload of the pair - bound to the collection rather than to one instance.</summary>
     [HttpGet("odata/v4/library/Media/Library.Circulation.AvailableCopies()")]
     [EnableQuery]
     public IQueryable<Copy> AvailableCopiesForAll() =>
-        data.Copies.Where(c => c.Status == AvailabilityStatus.Available).AsQueryable();
+        db.Copies.Where(c => c.Status == AvailabilityStatus.Available).AsQueryable();
 
     [HttpGet("odata/v4/library/Media/Library.Circulation.AvailableLanguages()")]
     public IEnumerable<string> AvailableLanguages() =>
-        data.Media.Select(m => m.Language).OfType<string>().Distinct().Order();
+        db.Media.Select(m => m.Language).OfType<string>().Distinct().Order();
 
     [HttpPost("odata/v4/library/Media({key})/Library.Circulation.Reserve")]
     public ActionResult<int> Reserve([FromRoute] Guid key, [FromBody] ODataActionParameters parameters)
     {
-        if (data.Media.All(m => m.Id != key))
+        if (db.Media.All(m => m.Id != key))
         {
             return NotFound();
         }
 
         var reservation = new Reservation { Id = Guid.NewGuid(), ReservedAt = DateTimeOffset.UtcNow };
-        data.Reservations.Add(reservation);
+
+        // Added to the set first, and only then linked to the member. Reaching a new entity solely through
+        // a tracked entity's navigation property is not enough: its key is caller-assigned, so the change
+        // tracker cannot tell a new row from an existing one and settles on "existing" - which turns the
+        // insert into an UPDATE of a row that does not exist yet, and fails the whole request.
+        db.Reservations.Add(reservation);
 
         if (parameters.TryGetValue("MemberId", out var memberId)
-            && data.Members.FirstOrDefault(m => m.Id == Convert.ToInt32(memberId)) is { } member)
+            && db.Members.Include(m => m.Reservations)
+                .FirstOrDefault(m => m.Id == Convert.ToInt32(memberId)) is { } member)
         {
             member.Reservations.Add(reservation);
         }
 
-        return data.Reservations.Count;
+        db.SaveChanges();
+        return db.Reservations.Count();
     }
 }
 
 /// <summary>Operations bound to <c>Library.Circulation.Member</c>.</summary>
-public class MemberOperationsController(LibraryData data) : ODataController
+public class MemberOperationsController(LibraryContext db) : ODataController
 {
     [HttpGet("odata/v4/library/Members({key})/Library.Circulation.OutstandingBalance()")]
     public ActionResult<decimal> OutstandingBalance([FromRoute] int key) =>
-        data.Members.FirstOrDefault(m => m.Id == key) is { } member ? member.Balance : NotFound();
+        db.Members.FirstOrDefault(m => m.Id == key) is { } member ? member.Balance : NotFound();
 
     [HttpGet("odata/v4/library/Members({key})/Library.Circulation.NoticeHistory()")]
     public ActionResult<IEnumerable<OverdueNotice>> NoticeHistory([FromRoute] int key) =>
-        data.Members.FirstOrDefault(m => m.Id == key) is { } member
+        db.Members.Include(m => m.Loans).FirstOrDefault(m => m.Id == key) is { } member
             ? member.Loans.Select(LibraryOperationsController.Notice).ToList()
             : NotFound();
 
     [HttpPost("odata/v4/library/Members({key})/Library.Circulation.RunReminders")]
     public ActionResult<IEnumerable<OverdueNotice>> RunReminders([FromRoute] int key) =>
-        data.Members.FirstOrDefault(m => m.Id == key) is { } member
+        db.Members.Include(m => m.Loans).FirstOrDefault(m => m.Id == key) is { } member
             ? member.Loans.Select(LibraryOperationsController.Notice).ToList()
             : NotFound();
 }
 
 /// <summary>Operations bound to <c>Library.Circulation.Copy</c>, which has a composite key.</summary>
-public class CopyOperationsController(LibraryData data) : ODataController
+public class CopyOperationsController(LibraryContext db) : ODataController
 {
     [HttpPost("odata/v4/library/Copies(MediumId={keyMediumId},InventoryNumber={keyInventoryNumber})/Library.Circulation.CheckOut")]
     public IActionResult CheckOut(
@@ -249,14 +266,14 @@ public class CopyOperationsController(LibraryData data) : ODataController
         [FromRoute] int keyInventoryNumber,
         [FromBody] ODataActionParameters parameters)
     {
-        var copy = CopiesController.Find(data, keyMediumId, keyInventoryNumber);
+        var copy = CopiesController.Find(db, keyMediumId, keyInventoryNumber);
         if (copy is null)
         {
             return NotFound();
         }
 
         if (!parameters.TryGetValue("MemberId", out var memberId)
-            || data.Members.FirstOrDefault(m => m.Id == Convert.ToInt32(memberId)) is not { } member)
+            || db.Members.FirstOrDefault(m => m.Id == Convert.ToInt32(memberId)) is not { } member)
         {
             return BadRequest("Unknown MemberId.");
         }
@@ -270,8 +287,8 @@ public class CopyOperationsController(LibraryData data) : ODataController
             Member = member,
             Copy = copy,
         };
-        data.Loans.Add(loan);
-        member.Loans.Add(loan);
+        db.Loans.Add(loan);
+        db.SaveChanges();
         return NoContent();
     }
 
@@ -281,7 +298,7 @@ public class CopyOperationsController(LibraryData data) : ODataController
         [FromRoute] int keyInventoryNumber,
         [FromBody] ODataActionParameters parameters)
     {
-        var copy = CopiesController.Find(data, keyMediumId, keyInventoryNumber);
+        var copy = CopiesController.Find(db, keyMediumId, keyInventoryNumber);
         if (copy is null)
         {
             return NotFound();
@@ -293,6 +310,7 @@ public class CopyOperationsController(LibraryData data) : ODataController
             copy.Condition = Convert.ToByte(newCondition);
         }
 
+        db.SaveChanges();
         return new ConditionReport
         {
             ConditionBefore = before,
@@ -303,18 +321,19 @@ public class CopyOperationsController(LibraryData data) : ODataController
 }
 
 /// <summary>Operations bound to <c>Library.Circulation.Loan</c>, single instance and collection.</summary>
-public class LoanOperationsController(LibraryData data) : ODataController
+public class LoanOperationsController(LibraryContext db) : ODataController
 {
     [HttpPost("odata/v4/library/Loans({key})/Library.Circulation.Renew")]
     public ActionResult<Loan> Renew([FromRoute] Guid key)
     {
-        var loan = data.Loans.FirstOrDefault(l => l.Id == key);
+        var loan = db.Loans.FirstOrDefault(l => l.Id == key);
         if (loan is null)
         {
             return NotFound();
         }
 
         loan.DueDate = loan.DueDate.AddDays(28);
+        db.SaveChanges();
         return loan;
     }
 
@@ -322,15 +341,16 @@ public class LoanOperationsController(LibraryData data) : ODataController
     [EnableQuery]
     public IQueryable<Loan> RenewAll()
     {
-        foreach (var loan in data.Loans)
+        foreach (var loan in db.Loans)
         {
             loan.DueDate = loan.DueDate.AddDays(28);
         }
 
-        return data.Loans.AsQueryable();
+        db.SaveChanges();
+        return db.Loans;
     }
 
     [HttpPost("odata/v4/library/Loans/Library.Circulation.BulkRenew")]
     public IEnumerable<string> BulkRenew() =>
-        data.Loans.Select(l => $"{l.Id} renewed until {l.DueDate.AddDays(28):yyyy-MM-dd}");
+        db.Loans.AsEnumerable().Select(l => $"{l.Id} renewed until {l.DueDate.AddDays(28):yyyy-MM-dd}");
 }

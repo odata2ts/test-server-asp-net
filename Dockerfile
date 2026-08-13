@@ -15,8 +15,9 @@ RUN dotnet restore src/LibraryService/LibraryService.csproj
 COPY . .
 RUN dotnet publish src/LibraryService/LibraryService.csproj -c Release -o /app --no-restore
 
-# The runtime image carries no SDK: the data is held in memory, so there is nothing to migrate or seed
-# at startup and every container starts from the identical, well-known state.
+# The runtime image carries no SDK and no database server: SQLite is a library, and the database lives in
+# the process's memory. The schema is created and seeded at startup from LibrarySeed, so there is nothing
+# to mount or migrate and every container starts from the identical, well-known state.
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app
 COPY --from=build /app .

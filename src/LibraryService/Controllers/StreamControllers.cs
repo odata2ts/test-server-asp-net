@@ -2,6 +2,7 @@ using Library.Catalog;
 using LibraryService.Data;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.OData.Routing.Controllers;
+using Microsoft.EntityFrameworkCore;
 
 namespace LibraryService.Controllers;
 
@@ -16,7 +17,7 @@ namespace LibraryService.Controllers;
 /// Routed explicitly. The media-entity convention would cover the first case, but not a contained media
 /// entity, and naming the routes here keeps the three cases visibly distinct.
 /// </summary>
-public class MediaStreamController(LibraryData data) : ODataController
+public class MediaStreamController(LibraryContext db) : ODataController
 {
     private const string DefaultContentType = "application/octet-stream";
 
@@ -24,12 +25,12 @@ public class MediaStreamController(LibraryData data) : ODataController
     [HttpGet("odata/v4/library/Media({key})/$value")]
     public IActionResult GetContent([FromRoute] Guid key)
     {
-        if (data.Media.All(m => m.Id != key))
+        if (db.Media.All(m => m.Id != key))
         {
             return NotFound();
         }
 
-        return data.EntityContent.TryGetValue(key, out var content)
+        return db.FindContent(ContentSlot.Entity, key) is { } content
             ? File(content.Bytes, content.ContentType)
             // The entity exists but carries no content yet - "no content", not "not found".
             : NoContent();
@@ -39,16 +40,17 @@ public class MediaStreamController(LibraryData data) : ODataController
     [HttpPut("odata/v4/library/Media({key})/$value")]
     public async Task<IActionResult> PutContent([FromRoute] Guid key)
     {
-        if (data.Media.All(m => m.Id != key))
+        if (db.Media.All(m => m.Id != key))
         {
             return NotFound();
         }
 
         using var buffer = new MemoryStream();
         await Request.Body.CopyToAsync(buffer);
-        data.EntityContent[key] = new MediaContent(
-            Request.ContentType ?? DefaultContentType,
-            buffer.ToArray());
+        db.SetContent(
+            ContentSlot.Entity,
+            key,
+            new MediaContent(Request.ContentType ?? DefaultContentType, buffer.ToArray()));
 
         return NoContent();
     }
@@ -63,12 +65,12 @@ public class MediaStreamController(LibraryData data) : ODataController
     [HttpDelete("odata/v4/library/Media({key})/$value")]
     public IActionResult DeleteContent([FromRoute] Guid key)
     {
-        if (data.Media.All(m => m.Id != key))
+        if (db.Media.All(m => m.Id != key))
         {
             return NotFound();
         }
 
-        data.EntityContent.Remove(key);
+        db.RemoveContent(ContentSlot.Entity, key);
         return NoContent();
     }
 
@@ -79,12 +81,12 @@ public class MediaStreamController(LibraryData data) : ODataController
     [HttpGet("odata/v4/library/Media({key})/Library.Catalog.Audiobook/Sample")]
     public IActionResult GetSample([FromRoute] Guid key)
     {
-        if (data.Media.OfType<Audiobook>().All(a => a.Id != key))
+        if (db.Media.OfType<Audiobook>().All(a => a.Id != key))
         {
             return NotFound();
         }
 
-        return data.SampleContent.TryGetValue(key, out var content)
+        return db.FindContent(ContentSlot.Sample, key) is { } content
             ? File(content.Bytes, content.ContentType)
             : NoContent();
     }
@@ -92,14 +94,18 @@ public class MediaStreamController(LibraryData data) : ODataController
     [HttpPut("odata/v4/library/Media({key})/Library.Catalog.Audiobook/Sample")]
     public async Task<IActionResult> PutSample([FromRoute] Guid key)
     {
-        if (data.Media.OfType<Audiobook>().All(a => a.Id != key))
+        if (db.Media.OfType<Audiobook>().All(a => a.Id != key))
         {
             return NotFound();
         }
 
         using var buffer = new MemoryStream();
         await Request.Body.CopyToAsync(buffer);
-        data.SampleContent[key] = new MediaContent(Request.ContentType ?? DefaultContentType, buffer.ToArray());
+        db.SetContent(
+            ContentSlot.Sample,
+            key,
+            new MediaContent(Request.ContentType ?? DefaultContentType, buffer.ToArray()));
+
         return NoContent();
     }
 
@@ -113,12 +119,12 @@ public class MediaStreamController(LibraryData data) : ODataController
     [HttpDelete("odata/v4/library/Media({key})/Library.Catalog.Audiobook/Sample")]
     public IActionResult DeleteSample([FromRoute] Guid key)
     {
-        if (data.Media.OfType<Audiobook>().All(a => a.Id != key))
+        if (db.Media.OfType<Audiobook>().All(a => a.Id != key))
         {
             return NotFound();
         }
 
-        data.SampleContent.Remove(key);
+        db.RemoveContent(ContentSlot.Sample, key);
         return NoContent();
     }
 
@@ -131,7 +137,7 @@ public class MediaStreamController(LibraryData data) : ODataController
             return NotFound();
         }
 
-        return data.ChapterContent.TryGetValue((key, chapterKey), out var content)
+        return db.FindContent(ContentSlot.Chapter, key, chapterKey) is { } content
             ? File(content.Bytes, content.ContentType)
             : NoContent();
     }
@@ -146,13 +152,23 @@ public class MediaStreamController(LibraryData data) : ODataController
 
         using var buffer = new MemoryStream();
         await Request.Body.CopyToAsync(buffer);
-        data.ChapterContent[(key, chapterKey)] =
-            new MediaContent(Request.ContentType ?? DefaultContentType, buffer.ToArray());
+        db.SetContent(
+            ContentSlot.Chapter,
+            key,
+            new MediaContent(Request.ContentType ?? DefaultContentType, buffer.ToArray()),
+            chapterKey);
 
         return NoContent();
     }
 
+    /// <summary>
+    /// The chapters have to be pulled in explicitly. A navigation property is not populated by loading its
+    /// parent - there is no lazy loading here - so without the <c>Include</c> every audiobook looks as if
+    /// it had no chapters at all, and every chapter stream would answer 404.
+    /// </summary>
     private bool ChapterExists(Guid audiobookId, int chapterId) =>
-        data.Media.OfType<Audiobook>().FirstOrDefault(a => a.Id == audiobookId)?.Chapters
+        db.Media.OfType<Audiobook>()
+            .Include(a => a.Chapters)
+            .FirstOrDefault(a => a.Id == audiobookId)?.Chapters
             .Any(c => c.Id == chapterId) == true;
 }

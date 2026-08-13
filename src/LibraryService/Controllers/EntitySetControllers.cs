@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.OData.Formatter;
 using Microsoft.AspNetCore.OData.Query;
 using Microsoft.AspNetCore.OData.Results;
 using Microsoft.AspNetCore.OData.Routing.Controllers;
+using Microsoft.EntityFrameworkCore;
 
 namespace LibraryService.Controllers;
 
@@ -14,14 +15,14 @@ namespace LibraryService.Controllers;
 /// The plain entity sets. `[EnableQuery]` hands `$select`, `$filter`, `$orderby`, `$top`, `$skip`,
 /// `$count` and `$expand` to the OData layer, which applies them to the returned <see cref="IQueryable{T}" />.
 /// </summary>
-public class MediaController(LibraryData data) : ODataController
+public class MediaController(LibraryContext db) : ODataController
 {
     [EnableQuery(MaxExpansionDepth = 4)]
-    public IQueryable<Medium> Get() => data.Media.AsQueryable();
+    public IQueryable<Medium> Get() => db.Media.AsQueryable();
 
     [EnableQuery]
     public SingleResult<Medium> Get([FromRoute] Guid key) =>
-        SingleResult.Create(data.Media.Where(m => m.Id == key).AsQueryable());
+        SingleResult.Create(db.Media.Where(m => m.Id == key).AsQueryable());
 
     /// <summary>
     /// Addressing by the <c>Core.AlternateKeys</c> key on <c>PrintMedium/ISBN</c>. The route template has
@@ -33,36 +34,38 @@ public class MediaController(LibraryData data) : ODataController
     public SingleResult<PrintMedium> GetByIsbn([FromRoute] string isbn)
     {
         var value = isbn.Trim('\'');
-        return SingleResult.Create(data.Media.OfType<PrintMedium>().Where(m => m.ISBN == value).AsQueryable());
+        return SingleResult.Create(db.Media.OfType<PrintMedium>().Where(m => m.ISBN == value).AsQueryable());
     }
 
     /// <summary>Type-cast segment, e.g. <c>/Media/Library.Catalog.Book</c>.</summary>
     [EnableQuery]
-    public IQueryable<Book> GetFromBook() => data.Media.OfType<Book>().AsQueryable();
+    public IQueryable<Book> GetFromBook() => db.Media.OfType<Book>().AsQueryable();
 
     [EnableQuery]
-    public IQueryable<EBook> GetFromEBook() => data.Media.OfType<EBook>().AsQueryable();
+    public IQueryable<EBook> GetFromEBook() => db.Media.OfType<EBook>().AsQueryable();
 
     [EnableQuery]
-    public IQueryable<Audiobook> GetFromAudiobook() => data.Media.OfType<Audiobook>().AsQueryable();
+    public IQueryable<Audiobook> GetFromAudiobook() => db.Media.OfType<Audiobook>().AsQueryable();
 
     [EnableQuery]
-    public IQueryable<CollectorsItem> GetFromCollectorsItem() => data.Media.OfType<CollectorsItem>().AsQueryable();
+    public IQueryable<CollectorsItem> GetFromCollectorsItem() => db.Media.OfType<CollectorsItem>().AsQueryable();
 
     [EnableQuery]
     public IQueryable<Copy> GetCopies([FromRoute] Guid key) =>
-        data.Copies.Where(c => c.MediumId == key).AsQueryable();
+        db.Copies.Where(c => c.MediumId == key).AsQueryable();
 
     [EnableQuery]
     public ActionResult<PublisherRegistry.Publisher> GetPublisherFromBook([FromRoute] Guid key) =>
-        data.Media.OfType<Book>().FirstOrDefault(b => b.Id == key)?.Publisher is { } publisher
+        db.Media.OfType<Book>().Include(b => b.Publisher).FirstOrDefault(b => b.Id == key)?.Publisher is { } publisher
             ? publisher
             : NotFound();
 
     /// <summary>Contained entities, reachable only through their audiobook.</summary>
     [EnableQuery]
     public IQueryable<AudiobookChapter> GetChaptersFromAudiobook([FromRoute] Guid key) =>
-        (data.Media.OfType<Audiobook>().FirstOrDefault(a => a.Id == key)?.Chapters ?? []).AsQueryable();
+        (db.Media.OfType<Audiobook>()
+            .Include(a => a.Chapters)
+            .FirstOrDefault(a => a.Id == key)?.Chapters ?? []).AsQueryable();
 
     public IActionResult Post([FromBody] Medium medium)
     {
@@ -71,48 +74,74 @@ public class MediaController(LibraryData data) : ODataController
             medium.Id = Guid.NewGuid();
         }
 
-        data.Media.Add(medium);
+        db.Media.Add(medium);
 
-        // Deep insert: copies that arrived nested must also become addressable as /Copies.
-        foreach (var copy in medium.Copies.Where(c => !data.Copies.Contains(c)))
+        // Deep insert: copies that arrived nested must also become addressable as /Copies. Adding the
+        // medium already puts them into the change tracker through the navigation property, so only the
+        // foreign key still has to be filled in - the previous `db.Copies.Contains(copy)` guard would now
+        // query the database for entities that are not in it yet.
+        foreach (var copy in medium.Copies)
         {
             copy.MediumId = medium.Id;
             copy.Medium = medium;
-            data.Copies.Add(copy);
         }
 
+        db.SaveChanges();
         return Created(medium);
     }
 
-    public IActionResult Patch([FromRoute] Guid key, Delta<Medium> delta)
+    /// <summary>
+    /// Patches a medium.
+    ///
+    /// The delta is nullable because it genuinely arrives null: <c>Media</c> is declared as the abstract
+    /// <c>Library.Catalog.Medium</c>, so an entity in it is always of a derived type, and OData JSON
+    /// requires <c>@odata.type</c> whenever the instance's type is derived from the declared one. Without
+    /// it the deserializer cannot decide what to construct and model binding yields null - which used to
+    /// be dereferenced, answering 500 to what is really a malformed request.
+    /// </summary>
+    public IActionResult Patch([FromRoute] Guid key, Delta<Medium>? delta)
     {
-        var existing = data.Media.FirstOrDefault(m => m.Id == key);
+        var existing = db.Media.FirstOrDefault(m => m.Id == key);
         if (existing is null)
         {
             return NotFound();
+        }
+
+        if (delta is null)
+        {
+            return BadRequest(
+                "The request body could not be read as a Medium. The Media entity set is declared as the "
+                + "abstract type Library.Catalog.Medium, so the payload has to name the concrete type it "
+                + "is patching, e.g. \"@odata.type\": \"#Library.Catalog.Book\".");
         }
 
         delta.Patch(existing);
+        db.SaveChanges();
         return Updated(existing);
     }
 
+    /// <summary>
+    /// Deletes a medium. Its copies go with it: the reference model's cascade is declared on the relational
+    /// side too, so the database enforces it rather than the controller walking the graph.
+    /// </summary>
     public IActionResult Delete([FromRoute] Guid key)
     {
-        var existing = data.Media.FirstOrDefault(m => m.Id == key);
+        var existing = db.Media.FirstOrDefault(m => m.Id == key);
         if (existing is null)
         {
             return NotFound();
         }
 
-        data.Media.Remove(existing);
+        db.Media.Remove(existing);
+        db.SaveChanges();
         return NoContent();
     }
 }
 
-public class CopiesController(LibraryData data) : ODataController
+public class CopiesController(LibraryContext db) : ODataController
 {
     [EnableQuery]
-    public IQueryable<Copy> Get() => data.Copies.AsQueryable();
+    public IQueryable<Copy> Get() => db.Copies.AsQueryable();
 
     /// <summary>
     /// Composite key. Routed explicitly: the convention builds `keyMediumId` / `keyInventoryNumber`
@@ -122,17 +151,19 @@ public class CopiesController(LibraryData data) : ODataController
     [EnableQuery]
     public SingleResult<Copy> Get([FromRoute] Guid keyMediumId, [FromRoute] int keyInventoryNumber) =>
         SingleResult.Create(
-            data.Copies.Where(c => c.MediumId == keyMediumId && c.InventoryNumber == keyInventoryNumber).AsQueryable());
+            db.Copies.Where(c => c.MediumId == keyMediumId && c.InventoryNumber == keyInventoryNumber).AsQueryable());
 
     [HttpGet("odata/v4/library/Copies(MediumId={keyMediumId},InventoryNumber={keyInventoryNumber})/Medium")]
     [EnableQuery]
     public ActionResult<Medium> GetMedium([FromRoute] Guid keyMediumId, [FromRoute] int keyInventoryNumber) =>
-        Find(data, keyMediumId, keyInventoryNumber)?.Medium is { } medium ? medium : NotFound();
+        Find(db, keyMediumId, keyInventoryNumber, q => q.Include(c => c.Medium))?.Medium is { } medium
+            ? medium
+            : NotFound();
 
     [HttpPatch("odata/v4/library/Copies(MediumId={keyMediumId},InventoryNumber={keyInventoryNumber})")]
-    public IActionResult Patch([FromRoute] Guid keyMediumId, [FromRoute] int keyInventoryNumber, Delta<Copy> delta)
+    public IActionResult Patch([FromRoute] Guid keyMediumId, [FromRoute] int keyInventoryNumber, Delta<Copy>? delta)
     {
-        var existing = Find(data, keyMediumId, keyInventoryNumber);
+        var existing = Find(db, keyMediumId, keyInventoryNumber, q => q.Include(c => c.Location));
         if (existing is null)
         {
             return NotFound();
@@ -141,18 +172,26 @@ public class CopiesController(LibraryData data) : ODataController
         var boundBranchId = NavigationBinding.Read(Request, nameof(Copy.Location), NavigationBinding.AsInt);
         var clearsBranch = NavigationBinding.ClearsLink(Request, nameof(Copy.Location));
 
+        // A body the deserializer refused - binding a navigation to null is one such case - arrives as a
+        // null delta. That is only recoverable because the binding was read from the raw body: with no
+        // binding either, nothing in the request can be applied, and saying so beats reporting the 204
+        // that a silently skipped patch would have produced.
+        if (delta is null && boundBranchId is null && !clearsBranch)
+        {
+            return BadRequest("The request body could not be read as a Copy.");
+        }
+
         // Keep the current link out of Patch's reach: a bound stub would be written into it.
         var currentLocation = existing.Location;
         existing.Location = null;
 
-        // A body the deserializer refused - binding a navigation to null is one such case - arrives as a
-        // null delta. The binding itself was read from the raw body, so it can still be applied.
         delta?.Patch(existing);
 
         existing.Location = boundBranchId is { } branchId
-            ? data.Branches.FirstOrDefault(b => b.Id == branchId)
+            ? db.Branches.FirstOrDefault(b => b.Id == branchId)
             : clearsBranch ? null : currentLocation;
 
+        db.SaveChanges();
         return Updated(existing);
     }
 
@@ -160,7 +199,9 @@ public class CopiesController(LibraryData data) : ODataController
     [HttpGet("odata/v4/library/Copies(MediumId={keyMediumId},InventoryNumber={keyInventoryNumber})/Location")]
     [EnableQuery]
     public ActionResult<Branch> GetLocation([FromRoute] Guid keyMediumId, [FromRoute] int keyInventoryNumber) =>
-        Find(data, keyMediumId, keyInventoryNumber)?.Location is { } branch ? branch : NotFound();
+        Find(db, keyMediumId, keyInventoryNumber, q => q.Include(c => c.Location))?.Location is { } branch
+            ? branch
+            : NotFound();
 
     /// <summary>
     /// Creates a copy. Accepts the navigation property either inline (deep insert) or as a reference -
@@ -178,21 +219,21 @@ public class CopiesController(LibraryData data) : ODataController
             return BadRequest("The request body could not be read as a Copy.");
         }
 
-        if (data.Media.FirstOrDefault(m => m.Id == copy.MediumId) is not { } medium)
+        if (db.Media.FirstOrDefault(m => m.Id == copy.MediumId) is not { } medium)
         {
             return BadRequest("The referenced medium does not exist.");
         }
 
         // A second copy with the same composite key used to be accepted, after which a keyed read failed
         // with "SingleResult must have zero or one elements" - a store that cannot be read from any more.
-        if (Find(data, copy.MediumId, copy.InventoryNumber) is not null)
+        if (Find(db, copy.MediumId, copy.InventoryNumber) is not null)
         {
             return Conflict($"A copy with inventory number {copy.InventoryNumber} exists for this medium.");
         }
 
         copy.Medium = medium;
-        medium.Copies.Add(copy);
-        data.Copies.Add(copy);
+        db.Copies.Add(copy);
+        db.SaveChanges();
         return Created(copy);
     }
 
@@ -200,13 +241,13 @@ public class CopiesController(LibraryData data) : ODataController
     [HttpDelete("odata/v4/library/Copies(MediumId={keyMediumId},InventoryNumber={keyInventoryNumber})")]
     public IActionResult Delete([FromRoute] Guid keyMediumId, [FromRoute] int keyInventoryNumber)
     {
-        if (Find(data, keyMediumId, keyInventoryNumber) is not { } existing)
+        if (Find(db, keyMediumId, keyInventoryNumber) is not { } existing)
         {
             return NotFound();
         }
 
-        existing.Medium?.Copies.Remove(existing);
-        data.Copies.Remove(existing);
+        db.Copies.Remove(existing);
+        db.SaveChanges();
         return NoContent();
     }
 
@@ -269,42 +310,63 @@ public class CopiesController(LibraryData data) : ODataController
 
         if (NavigationBinding.Read(Request, nameof(Copy.Location), NavigationBinding.AsInt) is { } branchId)
         {
-            copy.Location = data.Branches.FirstOrDefault(b => b.Id == branchId);
+            copy.Location = db.Branches.FirstOrDefault(b => b.Id == branchId);
         }
 
         return copy;
     }
 
-    internal static Copy? Find(LibraryData data, Guid mediumId, int inventoryNumber) =>
-        data.Copies.FirstOrDefault(c => c.MediumId == mediumId && c.InventoryNumber == inventoryNumber);
+    /// <summary>
+    /// Loads one copy by its composite key. The caller says which navigation properties it needs: none are
+    /// populated by default, so reaching through one that was not included silently looks like a null link
+    /// rather than an unloaded one.
+    /// </summary>
+    internal static Copy? Find(
+        LibraryContext db,
+        Guid mediumId,
+        int inventoryNumber,
+        Func<IQueryable<Copy>, IQueryable<Copy>>? include = null)
+    {
+        var copies = include is null ? db.Copies : include(db.Copies);
+        return copies.FirstOrDefault(c => c.MediumId == mediumId && c.InventoryNumber == inventoryNumber);
+    }
 }
 
-public class MembersController(LibraryData data) : ODataController
+public class MembersController(LibraryContext db) : ODataController
 {
     [EnableQuery(MaxExpansionDepth = 4)]
-    public IQueryable<Member> Get() => data.Members.AsQueryable();
+    public IQueryable<Member> Get() => db.Members.AsQueryable();
 
     [EnableQuery]
     public SingleResult<Member> Get([FromRoute] int key) =>
-        SingleResult.Create(data.Members.Where(m => m.Id == key).AsQueryable());
+        SingleResult.Create(db.Members.Where(m => m.Id == key).AsQueryable());
 
+    /// <summary>
+    /// The member's loans. Queried straight off the loans set rather than through the member's navigation
+    /// property, so that <c>$filter</c> and <c>$orderby</c> on this collection still reach the database
+    /// instead of being applied to an already-materialised list.
+    /// </summary>
     [EnableQuery]
     public IQueryable<Loan> GetLoans([FromRoute] int key) =>
-        (data.Members.FirstOrDefault(m => m.Id == key)?.Loans ?? []).AsQueryable();
+        db.Loans.Where(l => l.Member != null && l.Member.Id == key);
 
     [EnableQuery]
     public IQueryable<Reservation> GetReservations([FromRoute] int key) =>
-        (data.Members.FirstOrDefault(m => m.Id == key)?.Reservations ?? []).AsQueryable();
+        (db.Members.Include(m => m.Reservations).FirstOrDefault(m => m.Id == key)?.Reservations ?? [])
+            .AsQueryable();
 
     [EnableQuery]
     public ActionResult<IdDocument> GetIdDocument([FromRoute] int key) =>
-        data.Members.FirstOrDefault(m => m.Id == key)?.IdDocument is { } document ? document : NotFound();
+        db.Members.Include(m => m.IdDocument).FirstOrDefault(m => m.Id == key)?.IdDocument is { } document
+            ? document
+            : NotFound();
 
     public IActionResult Post([FromBody] Member member)
     {
-        member.Id = data.Members.Count == 0 ? 1 : data.Members.Max(m => m.Id) + 1;
-        data.Members.Add(member);
+        member.Id = NextMemberId();
+        db.Members.Add(member);
         RegisterNested(member);
+        db.SaveChanges();
         return Created(member);
     }
 
@@ -321,16 +383,16 @@ public class MembersController(LibraryData data) : ODataController
             {
                 case DeltaDeletedResource<Member> removed:
                     if (KeyOf(removed) is { } removedId
-                        && data.Members.FirstOrDefault(m => m.Id == removedId) is { } toRemove)
+                        && db.Members.FirstOrDefault(m => m.Id == removedId) is { } toRemove)
                     {
-                        data.Members.Remove(toRemove);
+                        db.Members.Remove(toRemove);
                     }
 
                     break;
 
                 case Delta<Member> delta:
                     var id = KeyOf(delta);
-                    if (id is not null && data.Members.FirstOrDefault(m => m.Id == id) is { } existing)
+                    if (id is not null && db.Members.FirstOrDefault(m => m.Id == id) is { } existing)
                     {
                         delta.Patch(existing);
                     }
@@ -338,8 +400,8 @@ public class MembersController(LibraryData data) : ODataController
                     {
                         // Upsert: an entry whose key is unknown creates the entity.
                         var created = delta.GetInstance();
-                        created.Id = id ?? (data.Members.Count == 0 ? 1 : data.Members.Max(m => m.Id) + 1);
-                        data.Members.Add(created);
+                        created.Id = id ?? NextMemberId();
+                        db.Members.Add(created);
                         RegisterNested(created);
                     }
 
@@ -347,8 +409,15 @@ public class MembersController(LibraryData data) : ODataController
             }
         }
 
+        db.SaveChanges();
         return Ok(deltaSet);
     }
+
+    /// <summary>
+    /// The next member id, assigned here rather than by the database. A test server whose keys depend on
+    /// insert order is one consumers cannot assert against, so <c>Member.Id</c> stays caller-assigned.
+    /// </summary>
+    private int NextMemberId() => db.Members.Any() ? db.Members.Max(m => m.Id) + 1 : 1;
 
     private static int? KeyOf(IDeltaSetItem item) =>
         item is Delta<Member> delta && delta.TryGetPropertyValue(nameof(Member.Id), out var value)
@@ -356,47 +425,35 @@ public class MembersController(LibraryData data) : ODataController
             : null;
 
     /// <summary>
-    /// Registers the entities that arrived nested inside the payload (deep insert) in their own sets.
-    /// Without this they exist only inside the parent's navigation property: reachable through it, but
-    /// keyless and absent from <c>/Loans</c> - an inconsistent state rather than a partial one.
+    /// Gives the entities that arrived nested inside the payload (deep insert) their keys.
+    ///
+    /// Adding the member already tracks the whole graph, so nothing has to be inserted into the other sets
+    /// by hand any more - that is what a change tracker is for. What is still this method's job is the
+    /// keys: they are caller-assigned throughout this service, so an entity that arrived without one would
+    /// otherwise be stored under <c>Guid.Empty</c> and collide with the next such entity.
     /// </summary>
-    private void RegisterNested(Member member)
+    private static void RegisterNested(Member member)
     {
-        foreach (var loan in member.Loans.Where(l => !data.Loans.Contains(l)))
+        foreach (var loan in member.Loans.Where(l => l.Id == Guid.Empty))
         {
-            if (loan.Id == Guid.Empty)
-            {
-                loan.Id = Guid.NewGuid();
-            }
-
+            loan.Id = Guid.NewGuid();
             loan.Member = member;
-            data.Loans.Add(loan);
         }
 
-        foreach (var reservation in member.Reservations.Where(r => !data.Reservations.Contains(r)))
+        foreach (var reservation in member.Reservations.Where(r => r.Id == Guid.Empty))
         {
-            if (reservation.Id == Guid.Empty)
-            {
-                reservation.Id = Guid.NewGuid();
-            }
-
-            data.Reservations.Add(reservation);
+            reservation.Id = Guid.NewGuid();
         }
 
-        if (member.IdDocument is { } document && !data.IdDocuments.Contains(document))
+        if (member.IdDocument is { Id: var documentId } document && documentId == Guid.Empty)
         {
-            if (document.Id == Guid.Empty)
-            {
-                document.Id = Guid.NewGuid();
-            }
-
-            data.IdDocuments.Add(document);
+            document.Id = Guid.NewGuid();
         }
     }
 
-    public IActionResult Patch([FromRoute] int key, Delta<Member> delta)
+    public IActionResult Patch([FromRoute] int key, Delta<Member>? delta)
     {
-        var existing = data.Members.FirstOrDefault(m => m.Id == key);
+        var existing = db.Members.Include(m => m.IdDocument).FirstOrDefault(m => m.Id == key);
         if (existing is null)
         {
             return NotFound();
@@ -405,60 +462,86 @@ public class MembersController(LibraryData data) : ODataController
         var boundDocumentId = NavigationBinding.Read(Request, nameof(Member.IdDocument), NavigationBinding.AsGuid);
         var clearsDocument = NavigationBinding.ClearsLink(Request, nameof(Member.IdDocument));
 
+        // Same as on Copy: a null delta is only usable because a binding came out of the raw body.
+        if (delta is null && boundDocumentId is null && !clearsDocument)
+        {
+            return BadRequest("The request body could not be read as a Member.");
+        }
+
         var currentDocument = existing.IdDocument;
         existing.IdDocument = null;
         delta?.Patch(existing);
 
         existing.IdDocument = boundDocumentId is { } documentId
-            ? data.IdDocuments.FirstOrDefault(d => d.Id == documentId)
+            ? db.IdDocuments.FirstOrDefault(d => d.Id == documentId)
             : clearsDocument ? null : currentDocument;
 
+        db.SaveChanges();
         return Updated(existing);
     }
 
+    /// <summary>
+    /// Replaces the member's own state.
+    ///
+    /// This used to remove the entity and add the incoming one under the same key. A change tracker will
+    /// not have that - the two are one row - and going through with it would have meant a cascading delete
+    /// of the member's loans on the way. Overwriting the scalar and complex properties in place is both
+    /// what EF permits and what the spec asks for: <c>PUT</c> replaces the entity, it does not touch its
+    /// relationships.
+    /// </summary>
     public IActionResult Put([FromRoute] int key, [FromBody] Member member)
     {
-        var existing = data.Members.FirstOrDefault(m => m.Id == key);
+        var existing = db.Members.FirstOrDefault(m => m.Id == key);
         if (existing is null)
         {
             return NotFound();
         }
 
-        data.Members.Remove(existing);
         member.Id = key;
-        data.Members.Add(member);
-        return Updated(member);
+        db.Entry(existing).CurrentValues.SetValues(member);
+        existing.Address = member.Address;
+        existing.PreviousAddresses = member.PreviousAddresses;
+
+        db.SaveChanges();
+        return Updated(existing);
     }
 
+    /// <summary>
+    /// Deletes a member. The loans go too - the reference model declares the cascade, and here the
+    /// database is the one that carries it out.
+    /// </summary>
     public IActionResult Delete([FromRoute] int key)
     {
-        var existing = data.Members.FirstOrDefault(m => m.Id == key);
+        var existing = db.Members.FirstOrDefault(m => m.Id == key);
         if (existing is null)
         {
             return NotFound();
         }
 
-        data.Members.Remove(existing);
+        db.Members.Remove(existing);
+        db.SaveChanges();
         return NoContent();
     }
 }
 
-public class LoansController(LibraryData data) : ODataController
+public class LoansController(LibraryContext db) : ODataController
 {
     [EnableQuery]
-    public IQueryable<Loan> Get() => data.Loans.AsQueryable();
+    public IQueryable<Loan> Get() => db.Loans.AsQueryable();
 
     [EnableQuery]
     public SingleResult<Loan> Get([FromRoute] Guid key) =>
-        SingleResult.Create(data.Loans.Where(l => l.Id == key).AsQueryable());
+        SingleResult.Create(db.Loans.Where(l => l.Id == key).AsQueryable());
 
     [EnableQuery]
     public ActionResult<Member> GetMember([FromRoute] Guid key) =>
-        data.Loans.FirstOrDefault(l => l.Id == key)?.Member is { } member ? member : NotFound();
+        db.Loans.Include(l => l.Member).FirstOrDefault(l => l.Id == key)?.Member is { } member
+            ? member
+            : NotFound();
 
     [EnableQuery]
     public ActionResult<Copy> GetCopy([FromRoute] Guid key) =>
-        data.Loans.FirstOrDefault(l => l.Id == key)?.Copy is { } copy ? copy : NotFound();
+        db.Loans.Include(l => l.Copy).FirstOrDefault(l => l.Id == key)?.Copy is { } copy ? copy : NotFound();
 
     /// <summary>
     /// Exists so that <c>Core.Immutable</c> on <see cref="Loan.LoanedAt" /> is observable at all: the
@@ -466,92 +549,112 @@ public class LoansController(LibraryData data) : ODataController
     /// treats the annotated property specially - see FEATURE-COVERAGE.md on what Delta&lt;T&gt; does
     /// with it.
     /// </summary>
-    public IActionResult Patch([FromRoute] Guid key, Delta<Loan> delta)
+    public IActionResult Patch([FromRoute] Guid key, Delta<Loan>? delta)
     {
-        var existing = data.Loans.FirstOrDefault(l => l.Id == key);
+        var existing = db.Loans.FirstOrDefault(l => l.Id == key);
         if (existing is null)
         {
             return NotFound();
         }
 
-        delta?.Patch(existing);
+        // Nothing here reads a navigation binding out of the raw body, so unlike on Copy and Member a
+        // null delta leaves nothing to apply. It used to be skipped silently and answered 204, which told
+        // the caller its update had been stored.
+        if (delta is null)
+        {
+            return BadRequest("The request body could not be read as a Loan.");
+        }
+
+        delta.Patch(existing);
+        db.SaveChanges();
         return Updated(existing);
     }
 }
 
-public class ReservationsController(LibraryData data) : ODataController
+public class ReservationsController(LibraryContext db) : ODataController
 {
     [EnableQuery]
-    public IQueryable<Reservation> Get() => data.Reservations.AsQueryable();
+    public IQueryable<Reservation> Get() => db.Reservations.AsQueryable();
 
     [EnableQuery]
     public SingleResult<Reservation> Get([FromRoute] Guid key) =>
-        SingleResult.Create(data.Reservations.Where(r => r.Id == key).AsQueryable());
+        SingleResult.Create(db.Reservations.Where(r => r.Id == key).AsQueryable());
 }
 
-public class IdDocumentsController(LibraryData data) : ODataController
+public class IdDocumentsController(LibraryContext db) : ODataController
 {
     [EnableQuery]
-    public IQueryable<IdDocument> Get() => data.IdDocuments.AsQueryable();
+    public IQueryable<IdDocument> Get() => db.IdDocuments.AsQueryable();
 
     [EnableQuery]
     public SingleResult<IdDocument> Get([FromRoute] Guid key) =>
-        SingleResult.Create(data.IdDocuments.Where(d => d.Id == key).AsQueryable());
+        SingleResult.Create(db.IdDocuments.Where(d => d.Id == key).AsQueryable());
 }
 
-public class BranchesController(LibraryData data) : ODataController
+public class BranchesController(LibraryContext db) : ODataController
 {
     [EnableQuery]
-    public IQueryable<Branch> Get() => data.Branches.AsQueryable();
+    public IQueryable<Branch> Get() => db.Branches.AsQueryable();
 
     [EnableQuery]
     public SingleResult<Branch> Get([FromRoute] int key) =>
-        SingleResult.Create(data.Branches.Where(b => b.Id == key).AsQueryable());
+        SingleResult.Create(db.Branches.Where(b => b.Id == key).AsQueryable());
 }
 
-public class BookmobilesController(LibraryData data) : ODataController
+public class BookmobilesController(LibraryContext db) : ODataController
 {
     [EnableQuery]
-    public IQueryable<Bookmobile> Get() => data.Bookmobiles.AsQueryable();
+    public IQueryable<Bookmobile> Get() => db.Bookmobiles.AsQueryable();
 
     [EnableQuery]
     public SingleResult<Bookmobile> Get([FromRoute] int key) =>
-        SingleResult.Create(data.Bookmobiles.Where(b => b.Id == key).AsQueryable());
+        SingleResult.Create(db.Bookmobiles.Where(b => b.Id == key).AsQueryable());
 }
 
-public class PublishersController(LibraryData data) : ODataController
+public class PublishersController(LibraryContext db) : ODataController
 {
     [EnableQuery]
-    public IQueryable<PublisherRegistry.Publisher> Get() => data.Publishers.AsQueryable();
+    public IQueryable<PublisherRegistry.Publisher> Get() => db.Publishers.AsQueryable();
 
     [EnableQuery]
     public SingleResult<PublisherRegistry.Publisher> Get([FromRoute] int key) =>
-        SingleResult.Create(data.Publishers.Where(p => p.Id == key).AsQueryable());
+        SingleResult.Create(db.Publishers.Where(p => p.Id == key).AsQueryable());
 
+    /// <summary>
+    /// Straight off the media set rather than through the publisher's navigation property, so the query
+    /// options on this collection are still translated to SQL.
+    /// </summary>
     [EnableQuery]
     public IQueryable<Book> GetBooks([FromRoute] int key) =>
-        (data.Publishers.FirstOrDefault(p => p.Id == key)?.Books ?? []).AsQueryable();
+        db.Media.OfType<Book>().Where(b => b.Publisher != null && b.Publisher.Id == key);
 }
 
-public class PublisherBranchesController(LibraryData data) : ODataController
+public class PublisherBranchesController(LibraryContext db) : ODataController
 {
     [EnableQuery]
-    public IQueryable<PublisherRegistry.Branch> Get() => data.PublisherBranches.AsQueryable();
+    public IQueryable<PublisherRegistry.Branch> Get() => db.PublisherBranches.AsQueryable();
 
     [EnableQuery]
     public SingleResult<PublisherRegistry.Branch> Get([FromRoute] int key) =>
-        SingleResult.Create(data.PublisherBranches.Where(b => b.Id == key).AsQueryable());
+        SingleResult.Create(db.PublisherBranches.Where(b => b.Id == key).AsQueryable());
 }
 
 /// <summary>The <c>MainBranch</c> singleton.</summary>
-public class MainBranchController(LibraryData data) : ODataController
+public class MainBranchController(LibraryContext db) : ODataController
 {
     [EnableQuery]
-    public ActionResult<Branch> Get() => data.MainBranch;
+    public ActionResult<Branch> Get() => db.MainBranch;
 
-    public IActionResult Patch(Delta<Branch> delta)
+    public IActionResult Patch(Delta<Branch>? delta)
     {
-        delta.Patch(data.MainBranch);
-        return Updated(data.MainBranch);
+        if (delta is null)
+        {
+            return BadRequest("The request body could not be read as a Branch.");
+        }
+
+        var branch = db.MainBranch;
+        delta.Patch(branch);
+        db.SaveChanges();
+        return Updated(branch);
     }
 }
