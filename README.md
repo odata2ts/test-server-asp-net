@@ -37,7 +37,9 @@ a modelling problem its own way. So this repo asks two questions:
 The answer is in **[FEATURE-COVERAGE.md](FEATURE-COVERAGE.md)**, the second deliverable. It is based on
 the emitted `$metadata`, diffed mechanically against the reference EDMX, and on requests against the
 running service - not on documentation - and it separates what the library cannot express, what the
-persistence layer costs and what this implementation simply does not do.
+persistence layer costs and what this implementation simply does not do. How the covered features are
+built - the workarounds, replacement binders and library traps behind them - is in
+[IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ## Version policy
 
@@ -117,6 +119,9 @@ Notes worth knowing before editing:
   it to its own `DbSet` first, then link it.
 - Navigation properties are **not** populated by loading their parent - there is no lazy loading. A
   missing `Include` reads as an empty collection or a null link, not as an error.
+
+Each of these, and every other workaround this model needed, is written up in
+[IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 ## Conventions
 
