@@ -4,12 +4,36 @@ using LibraryService.Data;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.OData.Formatter;
 using Microsoft.AspNetCore.OData.Query;
+using Microsoft.AspNetCore.OData.Results;
 using Microsoft.AspNetCore.OData.Routing.Attributes;
 using Microsoft.AspNetCore.OData.Routing.Controllers;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OData.Edm;
 
 namespace LibraryService.Controllers;
+
+/// <summary>
+/// Reading a declared parameter out of an action's request body.
+///
+/// A body that carries none of the declared parameters - <c>{}</c> - binds to a <b>null</b>
+/// <c>ODataActionParameters</c>, not to an empty dictionary. The parameter therefore has to be declared
+/// nullable and every read has to survive that null, otherwise the dereference happens before the
+/// controller's own check and answers 500. A required parameter that is missing is a malformed request:
+/// 400.
+/// </summary>
+internal static class ActionParameters
+{
+    /// <summary>The parameter's value, or null if the body did not carry it - or carried nothing at all.</summary>
+    internal static object? Get(this ODataActionParameters? parameters, string name) =>
+        parameters is not null && parameters.TryGetValue(name, out var value) ? value : null;
+
+    /// <summary>
+    /// <c>BadRequestODataResult</c>, not <c>ControllerBase.BadRequest</c>: only the OData result renders an
+    /// error payload. A plain <c>BadRequestObjectResult</c> holding a string comes back as an
+    /// <c>Edm.String</c> value with a 400 attached.
+    /// </summary>
+    internal static BadRequestODataResult Missing(string name) => new($"Parameter '{name}' is required.");
+}
 
 /// <summary>
 /// The unbound operations, i.e. everything reachable directly from the service root. Routed by
@@ -100,16 +124,21 @@ public class LibraryOperationsController(LibraryContext db) : ODataController
     }
 
     [HttpPost("odata/v4/library/ClosureDay")]
-    public IActionResult ClosureDay([FromBody] ODataActionParameters parameters) =>
-        parameters.ContainsKey("Date") ? NoContent() : BadRequest("Parameter 'Date' is required.");
+    public IActionResult ClosureDay([FromBody] ODataActionParameters? parameters) =>
+        parameters.Get("Date") is null ? ActionParameters.Missing("Date") : NoContent();
 
     [HttpPost("odata/v4/library/NextInventoryNumber")]
     public int NextInventoryNumber() => db.Copies.Any() ? db.Copies.Max(c => c.InventoryNumber) + 1 : 1;
 
+    /// <summary>
+    /// The one action here whose parameter is nullable in <c>$metadata</c>: a body without
+    /// <c>Obsolete</c> is a legal call, and it is exactly that body which arrives as a null
+    /// <c>ODataActionParameters</c>. Nothing is filtered out then.
+    /// </summary>
     [HttpPost("odata/v4/library/CleanUpKeywords")]
-    public IEnumerable<string> CleanUpKeywords([FromBody] ODataActionParameters parameters)
+    public IEnumerable<string> CleanUpKeywords([FromBody] ODataActionParameters? parameters)
     {
-        var obsolete = parameters.TryGetValue("Obsolete", out var value) && value is IEnumerable<string> list
+        var obsolete = parameters.Get("Obsolete") is IEnumerable<string> list
             ? list.ToHashSet()
             : [];
 
@@ -117,13 +146,20 @@ public class LibraryOperationsController(LibraryContext db) : ODataController
     }
 
     [HttpPost("odata/v4/library/YearEndClosing")]
-    public AnnualReport YearEndClosing([FromBody] ODataActionParameters parameters) =>
-        new()
+    public ActionResult<AnnualReport> YearEndClosing([FromBody] ODataActionParameters? parameters)
+    {
+        if (parameters.Get("Year") is not { } year)
         {
-            Year = parameters.TryGetValue("Year", out var year) ? Convert.ToInt32(year) : DateTime.UtcNow.Year,
+            return ActionParameters.Missing("Year");
+        }
+
+        return new AnnualReport
+        {
+            Year = Convert.ToInt32(year),
             TotalLoans = db.Loans.Count(),
             TotalLateFees = db.Loans.Sum(l => l.LateFee) ?? 0m,
         };
+    }
 
     [HttpPost("odata/v4/library/RunOverdueNotices")]
     public IEnumerable<OverdueNotice> RunOverdueNotices() => db.Loans.AsEnumerable().Select(Notice);
@@ -210,11 +246,16 @@ public class MediaOperationsController(LibraryContext db) : ODataController
         db.Media.Select(m => m.Language).OfType<string>().Distinct().Order();
 
     [HttpPost("odata/v4/library/Media({key})/Library.Circulation.Reserve")]
-    public ActionResult<int> Reserve([FromRoute] Guid key, [FromBody] ODataActionParameters parameters)
+    public ActionResult<int> Reserve([FromRoute] Guid key, [FromBody] ODataActionParameters? parameters)
     {
         if (db.Media.All(m => m.Id != key))
         {
             return NotFound();
+        }
+
+        if (parameters.Get("MemberId") is not { } memberId)
+        {
+            return ActionParameters.Missing("MemberId");
         }
 
         var reservation = new Reservation { Id = Guid.NewGuid(), ReservedAt = DateTimeOffset.UtcNow };
@@ -225,8 +266,7 @@ public class MediaOperationsController(LibraryContext db) : ODataController
         // insert into an UPDATE of a row that does not exist yet, and fails the whole request.
         db.Reservations.Add(reservation);
 
-        if (parameters.TryGetValue("MemberId", out var memberId)
-            && db.Members.Include(m => m.Reservations)
+        if (db.Members.Include(m => m.Reservations)
                 .FirstOrDefault(m => m.Id == Convert.ToInt32(memberId)) is { } member)
         {
             member.Reservations.Add(reservation);
@@ -264,7 +304,7 @@ public class CopyOperationsController(LibraryContext db) : ODataController
     public IActionResult CheckOut(
         [FromRoute] Guid keyMediumId,
         [FromRoute] int keyInventoryNumber,
-        [FromBody] ODataActionParameters parameters)
+        [FromBody] ODataActionParameters? parameters)
     {
         var copy = CopiesController.Find(db, keyMediumId, keyInventoryNumber);
         if (copy is null)
@@ -272,8 +312,12 @@ public class CopyOperationsController(LibraryContext db) : ODataController
             return NotFound();
         }
 
-        if (!parameters.TryGetValue("MemberId", out var memberId)
-            || db.Members.FirstOrDefault(m => m.Id == Convert.ToInt32(memberId)) is not { } member)
+        if (parameters.Get("MemberId") is not { } memberId)
+        {
+            return ActionParameters.Missing("MemberId");
+        }
+
+        if (db.Members.FirstOrDefault(m => m.Id == Convert.ToInt32(memberId)) is not { } member)
         {
             return BadRequest("Unknown MemberId.");
         }
@@ -296,7 +340,7 @@ public class CopyOperationsController(LibraryContext db) : ODataController
     public ActionResult<ConditionReport> AssessCondition(
         [FromRoute] Guid keyMediumId,
         [FromRoute] int keyInventoryNumber,
-        [FromBody] ODataActionParameters parameters)
+        [FromBody] ODataActionParameters? parameters)
     {
         var copy = CopiesController.Find(db, keyMediumId, keyInventoryNumber);
         if (copy is null)
@@ -304,18 +348,20 @@ public class CopyOperationsController(LibraryContext db) : ODataController
             return NotFound();
         }
 
-        var before = copy.Condition;
-        if (parameters.TryGetValue("NewCondition", out var newCondition))
+        if (parameters.Get("NewCondition") is not { } newCondition)
         {
-            copy.Condition = Convert.ToByte(newCondition);
+            return ActionParameters.Missing("NewCondition");
         }
+
+        var before = copy.Condition;
+        copy.Condition = Convert.ToByte(newCondition);
 
         db.SaveChanges();
         return new ConditionReport
         {
             ConditionBefore = before,
             ConditionAfter = copy.Condition,
-            Remark = parameters.TryGetValue("Remark", out var remark) ? remark as string : null,
+            Remark = parameters.Get("Remark") as string,
         };
     }
 }

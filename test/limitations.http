@@ -111,11 +111,3 @@ GET {{host}}/Media({{audiobook}})/Library.Catalog.Audiobook/Chapters(1)
 
 ### 404 - $entity?$id= is not routed
 GET {{host}}/$entity?$id=Media({{book}})
-
-### 500 - a required action parameter that is missing takes the whole action
-### down: the body binds to a null ODataActionParameters and the controller
-### dereferences it. Should be 400, as AcquireCollectorsItem answers.
-POST {{host}}/ClosureDay
-Content-Type: application/json
-
-{}

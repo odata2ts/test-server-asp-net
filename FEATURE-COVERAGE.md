@@ -87,6 +87,7 @@ as GeoJSON including `"crs": {"name": "EPSG:4326"}`.
 | Media entity streams, all three positions           | ✅ |   | ✔ | entity content, contained entity, stream property; empty content answers 204, not 404 |
 | `$ref`, both cardinalities                          | ✅ |   | ✔ | verbs differ per cardinality as the spec requires |
 | Deep insert                                         | ✅ | ✔ | ✔ | the library leaves the children keyless and outside their own set; the controller registers them |
+| Missing required action parameter answers 400       | ✅ |   | ✔ | a body carrying none of the declared parameters binds to a *null* `ODataActionParameters`; unguarded that is a 500 |
 | `@odata.bind` and `{"@id": …}`, incl. binding to null | ✅ |   | ✔ | routing a binding through `Delta<T>` corrupts the store - read from the raw body instead |
 | Delta payloads (OData 4.01)                         | ✅ | ✔ |   | update, removal and upsert in one request, delta response |
 | `$batch` (JSON)                                     | ✅ | ✔ |   | each sub-request its own unit of work |
