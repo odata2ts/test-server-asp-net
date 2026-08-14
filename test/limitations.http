@@ -1,0 +1,121 @@
+###############################################################################
+# "Library" OData V4 test model - known limits and deviations
+#
+# Start the server first:  dotnet run --project src/LibraryService
+# Every request carries the result actually observed against .NET 10.0 with
+# Microsoft.AspNetCore.OData 9.5.0.
+#
+# These are the requests that do NOT answer the way the OData spec or the
+# reference model would suggest. Each is separated by cause: the persistence
+# layer, the library, or this implementation. See ../FEATURE-COVERAGE.md for
+# the reasoning; this file only keeps the behaviour observable.
+###############################################################################
+
+@host = http://localhost:5091/odata/v4/library
+@audiobook = 22222222-2222-2222-2222-222222222222
+@book = 11111111-1111-1111-1111-111111111111
+@loan = 88888888-8888-8888-8888-888888888888
+
+###############################################################################
+# The persistence layer: Edm.DateTimeOffset is stored as UTC ticks
+#
+# No SQL pulls an hour back out of an integer tick count. The alternative was
+# measured rather than assumed: with EF's default mapping every request below
+# fails, comparison and $orderby included.
+###############################################################################
+
+### 500 - the LINQ expression l.LoanedAt.Hour == … has no translation
+GET {{host}}/Loans?$filter=hour(LoanedAt) eq 10
+
+### 500 - same for year() over Edm.DateTimeOffset
+GET {{host}}/Loans?$filter=year(LoanedAt) eq 2026
+
+### 500 - and for now()
+GET {{host}}/Loans?$filter=LoanedAt lt now()
+
+### 200 - but empty, and the loan IS on 2026-06-01: date() over the tick
+### storage answers an equality comparison wrongly rather than failing. The
+### only silent wrong answer in the service.
+GET {{host}}/Loans?$filter=date(LoanedAt) eq 2026-06-01
+
+### 200 - the same seed loan, over ge/le, which do work
+GET {{host}}/Loans?$filter=date(LoanedAt) ge 2000-01-01
+
+### 200 - $compute=date(...) returns the whole timestamp, not a date
+GET {{host}}/Loans?$compute=date(LoanedAt) as D&$select=Id,D
+
+### 200 - Edm.Date is unaffected; it needs no value converter
+GET {{host}}/Media?$filter=year(PublicationDate) eq 1925
+
+### 200 - and comparison and $orderby over Edm.DateTimeOffset are fine
+GET {{host}}/Loans?$orderby=LoanedAt
+
+###############################################################################
+# The persistence layer: the spatial types are stored as WKT text
+#
+# EF Core's spatial support is NetTopologySuite-only and would additionally
+# want the SpatiaLite native extension, so the type system OData speaks has no
+# EF provider at all. Deliberately out of scope - see CLAUDE.md.
+###############################################################################
+
+### 400 - Unknown function 'geo.distance'. Not reached by the store at all:
+### ODL's own query binder does not implement the geo.* functions.
+GET {{host}}/Branches?$filter=geo.distance(Location,geography'SRID=4326;Point(13.4 52.5)') lt 10000
+
+### 200 - the values themselves round-trip exactly, SRID included:
+### "crs": {"name": "EPSG:4326"}
+GET {{host}}/Branches(1)
+
+###############################################################################
+# The persistence layer: dynamic properties are stored as JSON
+###############################################################################
+
+### 200 - the open type's dynamic properties are served
+GET {{host}}/Media(77777777-7777-7777-7777-777777777777)
+
+### 400 - but they can never appear in $filter or $orderby: they are not
+### declared on the type, so the URI parser refuses them before the store is
+### ever asked
+GET {{host}}/Media?$filter=Appraisal gt 1000
+
+###############################################################################
+# The library: Edm.Duration has no date-part functions either
+###############################################################################
+
+### 400 - Unknown function 'totalseconds'
+GET {{host}}/Media/Library.Catalog.Audiobook?$filter=totalseconds(Duration) gt 100
+
+###############################################################################
+# This implementation: the HTTP preconditions are not enforced
+#
+# Copy/Condition is annotated Core.OptimisticConcurrency, is emitted as
+# @odata.etag, and EF puts the original value into the WHERE of every UPDATE -
+# so two writers racing on one copy do collide. The HTTP half is missing: the
+# controllers never read If-Match.
+###############################################################################
+
+### 204 - a stale ETag is accepted; 412 is never returned
+PATCH {{host}}/Copies(MediumId={{book}},InventoryNumber=1)
+Content-Type: application/json
+If-Match: W/"AAAA"
+
+{ "Condition": 5 }
+
+###############################################################################
+# This implementation: addressing gaps
+###############################################################################
+
+### 404 - a single contained entity by key is not served. Only the collection
+### and the chapter's stream are, see read.http and streams.http.
+GET {{host}}/Media({{audiobook}})/Library.Catalog.Audiobook/Chapters(1)
+
+### 404 - $entity?$id= is not routed
+GET {{host}}/$entity?$id=Media({{book}})
+
+### 500 - a required action parameter that is missing takes the whole action
+### down: the body binds to a null ODataActionParameters and the controller
+### dereferences it. Should be 400, as AcquireCollectorsItem answers.
+POST {{host}}/ClosureDay
+Content-Type: application/json
+
+{}

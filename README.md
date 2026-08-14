@@ -1,43 +1,43 @@
 # test-server-asp-net
 
-An **ASP.NET Core** implementation of the odata2ts **"Library"** OData V4 server feature test model - a
-deliberately feature-dense model used to evaluate which OData spec features a given server implementation
-actually supports.
+An **ASP.NET Core** implementation of the odata2ts **"Library"** OData V4 reference model: a live service
+to run integration tests against, shipped as a container image, and a report on how much of OData V4 /
+4.01 ASP.NET Core OData actually covers.
 
 C# / .NET, backed by SQLite held in memory through EF Core. No external services, nothing to install.
 
 ## Why this exists
 
-The reference model lives in its own repository,
-[odata2ts/test-reference-model](https://github.com/odata2ts/test-reference-model):
+**First: to be run.** odata2ts generates TypeScript clients from an OData service, and those clients have
+to be tested against a real one. This server is published as a container image and consumed by odata2ts'
+own integration tests, which start it, generate against its `$metadata` and issue requests at it:
+
+```bash
+docker run --rm -p 4004:4004 ghcr.io/odata2ts/test-server-asp-net:latest
+```
+
+The database is created and seeded at startup from fixed keys, so
+every start is the identical, well-known state and a restart is a reset. Nothing to mount, migrate or wait
+for, and no response that depends on insert order or wall-clock time - which is what makes the server
+assertable from an automated suite.
+
+**Second: to document what ASP.NET Core OData can do.** The model it serves is not an example
+application, it is the odata2ts reference model, a deliberately feature-dense probe of the OData spec that
+lives in its own repository, [odata2ts/test-reference-model](https://github.com/odata2ts/test-reference-model):
 
 - [`model/library.md`](https://github.com/odata2ts/test-reference-model/blob/main/model/library.md) - concept, design decisions, feature → location mapping
 - [`model/library.xml`](https://github.com/odata2ts/test-reference-model/blob/main/model/library.xml) - the reference EDMX (OData **4.01**, 100 % CSDL-conformant)
 
-That model is a probe of the OData spec, not a benchmark. A server does not have to implement all of
-OData, and a framework may well solve a modelling problem its own way. So this repo asks two questions:
+A probe, not a benchmark: a server does not have to implement all of OData, and a framework may well solve
+a modelling problem its own way. So this repo asks two questions:
 
 1. How much of the model can ASP.NET Core OData express?
 2. Where it does something else - **is that a gap, or a different design?**
 
-The answer is in **[FEATURE-COVERAGE.md](FEATURE-COVERAGE.md)**, the actual deliverable. It is based on
+The answer is in **[FEATURE-COVERAGE.md](FEATURE-COVERAGE.md)**, the second deliverable. It is based on
 the emitted `$metadata`, diffed mechanically against the reference EDMX, and on requests against the
-running service - not on documentation.
-
-Short version: the protocol and operation surface is reproduced completely - all 20 entity types, all 29
-operations including both overload pairs, containment, media entities, open types, `$batch`, `$apply` and
-the query options in the request body (`POST <resource>/$query`).
-Media entity streams, `$ref`, deep insert and 4.01 delta payloads are all served, and so is the model
-metadata down to `Partner` on both sides of every association, alternate keys and all four vocabulary
-annotations. Two attributes of the reference EDMX have no equivalent in the model builder at all:
-`TypeDefinition` and `Unicode`. `SRID` is dropped too, but carries the CSDL default value throughout the
-reference model and therefore costs nothing.
-
-Because the store is a real database, the query options are translated to SQL rather than run over
-`List<T>` - which is what a consumer of a real service meets, and a third thing the report separates out:
-*what the persistence layer costs*. Four types need a value converter to survive a SQLite column at all,
-`Edm.Date` and `Edm.TimeOfDay` need a replacement filter binder to be compared as values rather than as
-arithmetic on their parts, and the date-part functions over `Edm.DateTimeOffset` are what that costs.
+running service - not on documentation - and it separates what the library cannot express, what the
+persistence layer costs and what this implementation simply does not do.
 
 ## Version policy
 
@@ -61,10 +61,8 @@ The published image is the intended way to consume this server:
 docker run --rm -p 4004:4004 ghcr.io/odata2ts/test-server-asp-net:latest
 ```
 
-The database lives in memory and is created and seeded at startup, so every container starts from the
-identical, well-known state - which is what makes it usable from an automated test suite. There is nothing
-to mount, migrate or wait for, and a restart is a reset. `latest` is republished from every push to `main`, and a
-version tag additionally yields `1.2.3`, `1.2` and `1`. The image is smoke-tested before it is pushed.
+`latest` is republished from every push to `main`, and a version tag additionally yields `1.2.3`, `1.2` and
+`1`. The image is smoke-tested before it is pushed.
 
 ### Locally
 
@@ -74,8 +72,16 @@ Requires the .NET 10 SDK.
 dotnet run --project src/LibraryService
 ```
 
-Service root: <http://localhost:5000/odata/v4/library/> ·
-metadata: <http://localhost:5000/odata/v4/library/$metadata>
+Service root: <http://localhost:5091/odata/v4/library/> ·
+metadata: <http://localhost:5091/odata/v4/library/$metadata>
+
+### Trying it out
+
+[`test/`](test/) holds every scenario the service is meant to answer as `.http` scripts - one file per
+category, each request annotated with the status code and behaviour **actually observed**, including the
+ones that do *not* answer as the spec suggests ([`limitations.http`](test/limitations.http)). They are the
+executable counterpart to FEATURE-COVERAGE.md and run in any `.http` client. See
+[`test/README.md`](test/README.md).
 
 ## Layout
 
@@ -86,6 +92,7 @@ metadata: <http://localhost:5000/odata/v4/library/$metadata>
 | `src/LibraryService/Data/`            | The `DbContext`, the seed with its fixed keys, and the value converters |
 | `src/LibraryService/Controllers/`     | Entity sets and singleton; all functions and actions                   |
 | `src/LibraryService/Query/`           | `$search` binder - without it the option is silently ignored - and the replacement filter binder |
+| `test/`                               | The `.http` request collection, one file per category                  |
 
 Streams (`$value`, the `Sample` stream property, contained chapters) and `$ref` live in
 `Controllers/StreamControllers.cs` and `Controllers/RefControllers.cs`.

@@ -1,0 +1,75 @@
+###############################################################################
+# "Library" OData V4 test model - relationship management with $ref
+#
+# Start the server first:  dotnet run --project src/LibraryService
+# Every request carries the result actually observed against .NET 10.0 with
+# Microsoft.AspNetCore.OData 9.5.0.
+#
+# Both cardinalities are covered, because the spec assigns them different
+# verbs: a collection-valued navigation property takes POST to add and DELETE
+# with $id to remove, a single-valued one takes PUT to set and plain DELETE to
+# clear.
+#
+# THESE CHANGE THE STORE; restart the server for a clean slate.
+###############################################################################
+
+@host = http://localhost:5091/odata/v4/library
+@loan = 88888888-8888-8888-8888-888888888888
+@idDocument = aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+
+###############################################################################
+# Collection-valued: Member/Loans
+###############################################################################
+
+### 200 - {"value":[{"@odata.id":".../Loans(8888...)"}]}
+GET {{host}}/Members(1)/Loans/$ref
+
+### 204 - removes the link without deleting the loan, which is why the foreign
+### key behind Member/Loans is mapped optional despite the cascading delete
+DELETE {{host}}/Members(1)/Loans/$ref?$id={{host}}/Loans({{loan}})
+
+### 200 - empty now
+GET {{host}}/Members(1)/Loans/$ref
+
+### 204 - links it back
+POST {{host}}/Members(1)/Loans/$ref
+Content-Type: application/json
+
+{ "@odata.id": "{{host}}/Loans({{loan}})" }
+
+### 400 - a reference to a non-existent entity
+POST {{host}}/Members(1)/Loans/$ref
+Content-Type: application/json
+
+{ "@odata.id": "{{host}}/Loans(00000000-0000-0000-0000-000000000000)" }
+
+### 404 - unknown member
+GET {{host}}/Members(999)/Loans/$ref
+
+###############################################################################
+# Single-valued: Member/IdDocument
+###############################################################################
+
+### 200 - a single {"@odata.id": ...}, not a collection
+GET {{host}}/Members(1)/IdDocument/$ref
+
+### 204 - clears it; no $id, since there is only one link
+DELETE {{host}}/Members(1)/IdDocument/$ref
+
+### 204 - no link, and that is a state rather than a missing resource
+GET {{host}}/Members(1)/IdDocument/$ref
+
+### 204 - PUT, not POST: it replaces
+PUT {{host}}/Members(1)/IdDocument/$ref
+Content-Type: application/json
+
+{ "@odata.id": "{{host}}/IdDocuments({{idDocument}})" }
+
+### 200 - set again
+GET {{host}}/Members(1)/IdDocument/$ref
+
+### 400 - unknown target
+PUT {{host}}/Members(1)/IdDocument/$ref
+Content-Type: application/json
+
+{ "@odata.id": "{{host}}/IdDocuments(00000000-0000-0000-0000-000000000000)" }

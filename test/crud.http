@@ -1,0 +1,271 @@
+###############################################################################
+# "Library" OData V4 test model - create, update, delete
+#
+# Start the server first:  dotnet run --project src/LibraryService
+# Every request carries the result actually observed against .NET 10.0 with
+# Microsoft.AspNetCore.OData 9.5.0.
+#
+# THESE CHANGE THE STORE. The requests below assume the freshly seeded state
+# and are meant to be run top to bottom; restart the server for a clean slate
+# (the database is held in memory, so a restart is a reset).
+###############################################################################
+
+@host = http://localhost:5091/odata/v4/library
+@book = 11111111-1111-1111-1111-111111111111
+@audiobook = 22222222-2222-2222-2222-222222222222
+@dvd = 66666666-6666-6666-6666-666666666666
+@loan = 88888888-8888-8888-8888-888888888888
+@idDocument = aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+
+###############################################################################
+# Entities
+###############################################################################
+
+### 201 - the payload has to name the concrete type: the Media set is declared
+### as the abstract Library.Catalog.Medium
+POST {{host}}/Media
+Content-Type: application/json
+
+{
+  "@odata.type": "#Library.Catalog.Book",
+  "Title": "Neues Buch",
+  "Language": "de",
+  "ISBN": "9780000000001",
+  "PageCount": 100
+}
+
+### 400 - same reason, on update: without @odata.type the deserializer has no
+### type to construct and hands the action a null delta. Worth knowing when
+### generating a client - a PATCH builder emitting only changed properties
+### produces exactly this shape.
+PATCH {{host}}/Media({{book}})
+Content-Type: application/json
+
+{ "Title": "Neu" }
+
+### 204
+PATCH {{host}}/Media({{book}})
+Content-Type: application/json
+
+{ "@odata.type": "#Library.Catalog.Book", "Title": "Der Prozess (2. Aufl.)" }
+
+### 200 - Title is "Der Prozess (2. Aufl.)"
+GET {{host}}/Media({{book}})?$select=Title
+
+### 204 - the other entity sets are declared with concrete types and take an
+### untyped body
+PATCH {{host}}/Members(1)
+Content-Type: application/json
+
+{ "Name": "Alice M." }
+
+### 204 - PUT replaces the member's own state; its relationships are untouched
+PUT {{host}}/Members(2)
+Content-Type: application/json
+
+{
+  "Name": "Bob B.",
+  "DateOfBirth": "1975-11-30",
+  "ActiveSince": "2020-06-20T14:30:00Z",
+  "Balance": 1.5
+}
+
+### 201 - Id is assigned by the server (max + 1), never by the database
+POST {{host}}/Members
+Content-Type: application/json
+
+{
+  "Name": "Carla Neu",
+  "DateOfBirth": "1990-01-01",
+  "ActiveSince": "2026-01-01T00:00:00Z",
+  "Balance": 0
+}
+
+###############################################################################
+# Composite key
+###############################################################################
+
+### 201 - POST /Copies reads the payload by hand rather than through
+### Delta<Copy>: the deserializer refuses a body binding a navigation property
+### backed by a referential constraint.
+POST {{host}}/Copies
+Content-Type: application/json
+
+{
+  "MediumId": "11111111-1111-1111-1111-111111111111",
+  "InventoryNumber": 99,
+  "Condition": 1,
+  "IsLoanable": true,
+  "Status": "Available",
+  "AcquisitionDate": "2026-01-01",
+  "WeightKg": 0.4,
+  "Location_": "A-99"
+}
+
+### 409 - a second copy with the same composite key. Accepting it left the
+### store unreadable: every keyed read of that copy then failed with
+### "SingleResult must have zero or one elements".
+POST {{host}}/Copies
+Content-Type: application/json
+
+{ "MediumId": "11111111-1111-1111-1111-111111111111", "InventoryNumber": 99, "Condition": 1 }
+
+### 204 - PATCH does go through Delta<T>
+PATCH {{host}}/Copies(MediumId={{book}},InventoryNumber=99)
+Content-Type: application/json
+
+{ "Condition": 3 }
+
+### 204
+DELETE {{host}}/Copies(MediumId={{book}},InventoryNumber=99)
+
+###############################################################################
+# Deep insert
+###############################################################################
+
+### 201 - parent and children in one request. The deserializer fills the nested
+### entities into the navigation property but registers them nowhere else, so
+### the controller assigns their keys explicitly - without that the child is
+### reachable through Members(n)/Loans while carrying an all-zero key.
+POST {{host}}/Members
+Content-Type: application/json
+
+{
+  "Name": "Deep Insert",
+  "ActiveSince": "2026-01-01T00:00:00Z",
+  "Balance": 0,
+  "Loans": [ { "LoanedAt": "2026-02-01T09:00:00Z", "DueDate": "2026-03-01" } ]
+}
+
+### 200 - the nested loan, with a real key
+GET {{host}}/Members(4)/Loans
+
+### 200 - and addressable in its own set: 2 loans now
+GET {{host}}/Loans?$count=true&$select=Id
+
+###############################################################################
+# Delta payload on the collection (OData 4.01)
+###############################################################################
+
+### 200 - update, removal and upsert in one request. The response is a proper
+### delta payload carrying @odata.removed and @odata.id. An entry whose key is
+### unknown is treated as an upsert.
+PATCH {{host}}/Members
+Content-Type: application/json
+
+{
+  "@context": "{{host}}/$metadata#Members/$delta",
+  "value": [
+    { "Id": 1, "Name": "Alice Delta" },
+    { "@removed": { "reason": "deleted" }, "Id": 3 },
+    { "Id": 99, "Name": "Upsert Neu", "ActiveSince": "2026-01-01T00:00:00Z", "Balance": 0 }
+  ]
+}
+
+### 200 - members 1, 2, 4 and 99; 3 is gone
+GET {{host}}/Members?$select=Id,Name
+
+###############################################################################
+# Binding an existing entity: @odata.bind (4.0) and {"@id"} (4.01)
+#
+# The bindings are read from the raw request body, not through Delta<T>: the
+# deserializer turns either notation into a partial instance carrying only the
+# key, and Delta.Patch writes that INTO the currently linked entity - which
+# answers 204 while leaving two entities under the same key behind.
+###############################################################################
+
+### 201 - bound on create
+POST {{host}}/Copies
+Content-Type: application/json
+
+{
+  "MediumId": "11111111-1111-1111-1111-111111111111",
+  "InventoryNumber": 98,
+  "Condition": 1,
+  "Location@odata.bind": "{{host}}/Branches(2)"
+}
+
+### 200 - Suburban Branch
+GET {{host}}/Copies(MediumId={{book}},InventoryNumber=98)/Location
+
+### 204 - re-pointed with the 4.01 notation
+PATCH {{host}}/Copies(MediumId={{book}},InventoryNumber=98)
+Content-Type: application/json
+
+{ "Location": { "@id": "{{host}}/Branches(1)" } }
+
+### 200 - Central Library
+GET {{host}}/Copies(MediumId={{book}},InventoryNumber=98)/Location
+
+### 204 - binding to null clears the link
+PATCH {{host}}/Copies(MediumId={{book}},InventoryNumber=98)
+Content-Type: application/json
+
+{ "Location@odata.bind": null }
+
+### 404 - no link any more
+GET {{host}}/Copies(MediumId={{book}},InventoryNumber=98)/Location
+
+### 204
+DELETE {{host}}/Copies(MediumId={{book}},InventoryNumber=98)
+
+###############################################################################
+# The managed-property terms are declared but never enforced
+#
+# All four (Computed, Immutable, ComputedDefaultValue, Permissions) are emitted
+# in $metadata. Delta<T> records whatever the payload set and writes it
+# through; the value is neither dropped nor rejected, and the client is told
+# nothing. That is the library's position, not this server's.
+###############################################################################
+
+### 204 - although Loan/LoanedAt is annotated Core.Immutable
+PATCH {{host}}/Loans({{loan}})
+Content-Type: application/json
+
+{ "LoanedAt": "1999-01-01T00:00:00Z" }
+
+### 200 - and LoanedAt really is 1999-01-01
+GET {{host}}/Loans({{loan}})?$select=LoanedAt
+
+### 204 - although Medium/PopularityScore is annotated Core.Computed
+PATCH {{host}}/Media({{audiobook}})
+Content-Type: application/json
+
+{ "@odata.type": "#Library.Catalog.Audiobook", "PopularityScore": 1.0 }
+
+### 200 - and PopularityScore really is 1.0
+GET {{host}}/Media({{audiobook}})?$select=PopularityScore
+
+###############################################################################
+# Singleton
+###############################################################################
+
+### 204
+PATCH {{host}}/MainBranch
+Content-Type: application/json
+
+{ "Name": "Zentralbibliothek" }
+
+### 200
+GET {{host}}/MainBranch?$select=Name
+
+###############################################################################
+# Delete, and what cascades with it
+###############################################################################
+
+### 204 - the medium's copies go with it: the reference model's cascade is
+### declared on the relational side too, so the database enforces it
+DELETE {{host}}/Media({{dvd}})
+
+### 404 - the DVD's copy is gone. Over the previous in-memory store it stayed
+### behind with a required Medium that no longer existed.
+GET {{host}}/Copies(MediumId={{dvd}},InventoryNumber=1)
+
+### 204 - the member's loans cascade the same way
+DELETE {{host}}/Members(2)
+
+### 404
+GET {{host}}/Members(2)
+
+### 404 - deleting twice
+DELETE {{host}}/Members(2)

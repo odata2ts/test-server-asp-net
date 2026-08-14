@@ -1,0 +1,161 @@
+###############################################################################
+# "Library" OData V4 test model - query options
+#
+# Start the server first:  dotnet run --project src/LibraryService
+# Every request carries the result actually observed against .NET 10.0 with
+# Microsoft.AspNetCore.OData 9.5.0. Read-only.
+#
+# The store is SQLite through EF Core, so every option here is translated to
+# SQL rather than run over a List<T>. The ones that have no translation are in
+# limitations.http, not here.
+###############################################################################
+
+@host = http://localhost:5091/odata/v4/library
+@book = 11111111-1111-1111-1111-111111111111
+@audiobook = 22222222-2222-2222-2222-222222222222
+
+###############################################################################
+# $select, $top, $skip, $count, $orderby
+###############################################################################
+
+### 200
+GET {{host}}/Media?$select=Title,Language
+
+### 200 - @odata.count is present
+GET {{host}}/Media?$orderby=Title&$top=2&$count=true
+
+### 200
+GET {{host}}/Media?$skip=5&$top=2&$select=Title
+
+### 200 - Erstausgabe 1899 (9.9) first
+GET {{host}}/Media?$orderby=PopularityScore desc&$top=3&$select=Title,PopularityScore
+
+### 200 - across a navigation property
+GET {{host}}/Loans?$orderby=Member/Name&$select=Id
+
+### 400 - a client-invented token is refused; $skiptoken values are server-generated
+GET {{host}}/Media?$select=Title&$skiptoken=x
+
+###############################################################################
+# $filter
+###############################################################################
+
+### 200 - 6 of 7
+GET {{host}}/Media?$filter=Language eq 'de'
+
+### 200 - string function
+GET {{host}}/Media?$filter=contains(Title,'Prozess')
+
+### 200
+GET {{host}}/Branches?$filter=startswith(Name,'Central')
+
+### 200 - two predicates
+GET {{host}}/Media?$filter=PublicationDate gt 2000-01-01 and Language eq 'de'
+
+### 200 - Edm.Date compared as a value. Needs the replacement filter binder:
+### the stock one rebuilds both sides as year*10000+month*100+day.
+GET {{host}}/Media?$filter=PublicationDate gt 2000-01-01
+
+### 200 - year()/month() over Edm.Date translate (no value converter involved)
+GET {{host}}/Media?$filter=year(PublicationDate) eq 1925
+
+### 200 - Edm.TimeOfDay, same binder. Without it: no SQL at all, 500.
+GET {{host}}/Branches?$filter=OpensAt gt 09:30:00
+
+### 200 - Edm.DateTimeOffset compared as a value (stored as UTC ticks)
+GET {{host}}/Loans?$filter=LoanedAt gt 2020-01-01T00:00:00Z
+
+### 200 - collection-valued primitive property
+GET {{host}}/Media?$filter=Keywords/$count gt 1
+
+### 200 - lambda over the same
+GET {{host}}/Media?$filter=Keywords/any(k: k eq 'Klassiker')
+
+### 200 - enum
+GET {{host}}/Copies?$filter=Status eq Library.Catalog.AvailabilityStatus'Available'
+
+### 200 - flags enum, non-ASCII member (Café is percent-encoded on the wire)
+GET {{host}}/Branches?$filter=Amenities has Library.Catalog.Amenities'Café'
+
+### 200 - type test
+GET {{host}}/Media?$filter=isof('Library.Catalog.Book')
+
+### 200 - property of a complex property
+GET {{host}}/Members?$filter=Address/City eq 'Berlin'
+
+### 200 - nullable numeric
+GET {{host}}/Media?$filter=PopularityScore ge 9
+
+### 400 - unknown property, refused by the URI parser before anything runs
+GET {{host}}/Media?$filter=Nope eq 1
+
+###############################################################################
+# $expand
+###############################################################################
+
+### 200
+GET {{host}}/Media({{book}})?$expand=Copies
+
+### 200 - nested options on the expanded collection
+GET {{host}}/Media({{book}})?$expand=Copies($filter=Status eq Library.Catalog.AvailabilityStatus'Available';$top=1;$count=true)
+
+### 200 - $select inside $expand, combined with $select on the parent
+GET {{host}}/Media?$select=Title&$expand=Copies($select=InventoryNumber)&$top=1
+
+### 200 - $orderby inside $expand
+GET {{host}}/Members?$select=Name&$expand=Loans($orderby=DueDate desc)
+
+### 200 - links only
+GET {{host}}/Media({{book}})?$expand=Copies/$ref
+
+###############################################################################
+# $search - needs the ISearchBinder in the per-route container. Without it the
+# option is accepted and silently ignored, i.e. 200 with the unfiltered set.
+###############################################################################
+
+### 200 - matches the title
+GET {{host}}/Media?$search=Prozess
+
+### 200 - matches a keyword
+GET {{host}}/Media?$search=Klassiker
+
+### 200 - OR; AND and NOT work the same way
+GET {{host}}/Media?$search=Prozess OR Metropolis
+
+###############################################################################
+# $apply and $compute
+###############################################################################
+
+### 200 - [{"Language":"de","Count":6},{"Language":"en","Count":1}]
+GET {{host}}/Media?$apply=groupby((Language),aggregate($count as Count))
+
+### 200 - the computed property is selectable
+GET {{host}}/Media?$compute=length(Title) as TitleLength&$select=Title,TitleLength
+
+###############################################################################
+# Query options in the request body: POST <resource>/$query (OData 4.01)
+#
+# UseODataQueryRequest() rewrites the request into the equivalent GET, so it
+# has to sit in front of UseRouting - behind it the route does not exist (405).
+###############################################################################
+
+### 200 - filtered and projected
+POST {{host}}/Media/$query
+Content-Type: text/plain
+
+$filter=Language eq 'de'&$select=Title
+
+### 200 - the body is treated as a query string, so percent-encoded option
+### names are accepted too, which is what generated clients tend to emit
+POST {{host}}/Media({{book}})/$query
+Content-Type: text/plain
+
+%24select=Title
+
+### 200 - the body is not subject to the limit on the request line, so a
+### $filter of any length is accepted here. The URL form of the same option
+### answers 414 from about 8 KB on - see limitations.http.
+POST {{host}}/Media/$query
+Content-Type: text/plain
+
+$filter=Language in ('x0','x1','x2','x3','x4','x5','x6','x7','x8','x9','de')

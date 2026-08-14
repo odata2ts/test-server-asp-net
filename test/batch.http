@@ -1,0 +1,53 @@
+###############################################################################
+# "Library" OData V4 test model - $batch (JSON)
+#
+# Start the server first:  dotnet run --project src/LibraryService
+# Every request carries the result actually observed against .NET 10.0 with
+# Microsoft.AspNetCore.OData 9.5.0.
+#
+# The DbContext is scoped, so every sub-request gets its own unit of work: a
+# PATCH in one sub-request is visible to a GET in the next, and each commits on
+# its own.
+#
+# THESE CHANGE THE STORE; restart the server for a clean slate.
+###############################################################################
+
+@host = http://localhost:5091/odata/v4/library
+
+### 200 - three sub-responses; the third sees what the second wrote
+POST {{host}}/$batch
+Content-Type: application/json
+
+{
+  "requests": [
+    { "id": "1", "method": "get", "url": "Media?$top=1&$select=Title" },
+    { "id": "2", "method": "patch", "url": "Members(1)",
+      "headers": { "content-type": "application/json" },
+      "body": { "Name": "Batch Alice" } },
+    { "id": "3", "method": "get", "url": "Members(1)?$select=Name", "dependsOn": ["2"] }
+  ]
+}
+
+### 200 - a sub-request may fail on its own; the batch itself still answers 200
+POST {{host}}/$batch
+Content-Type: application/json
+
+{
+  "requests": [
+    { "id": "1", "method": "get", "url": "Media(00000000-0000-0000-0000-000000000000)" },
+    { "id": "2", "method": "get", "url": "Media/$count" }
+  ]
+}
+
+### 200 - create and read back in one batch
+POST {{host}}/$batch
+Content-Type: application/json
+
+{
+  "requests": [
+    { "id": "1", "method": "post", "url": "Members",
+      "headers": { "content-type": "application/json" },
+      "body": { "Name": "Batch Neu", "ActiveSince": "2026-01-01T00:00:00Z", "Balance": 0 } },
+    { "id": "2", "method": "get", "url": "Members?$select=Id,Name", "dependsOn": ["1"] }
+  ]
+}

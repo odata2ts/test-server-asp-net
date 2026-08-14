@@ -1,0 +1,23 @@
+###############################################################################
+# "Library" OData V4 test model - service document & metadata
+#
+# Start the server first:  dotnet run --project src/LibraryService
+# Every request carries the result actually observed against .NET 10.0 with
+# Microsoft.AspNetCore.OData 9.5.0. See ../FEATURE-COVERAGE.md for the verdicts.
+###############################################################################
+
+@host = http://localhost:5091/odata/v4/library
+# container image: http://localhost:4004/odata/v4/library
+
+### 200 - 16 entries: 10 entity sets, the MainBranch singleton and 5 function
+### imports (TotalMediaCount, AllLanguages, StatsPerBranch, MostReadMedium,
+### NewReleases). Search and LoanStatistics are declared but not listed here.
+GET {{host}}/
+
+### 200 - the central comparison artifact. Diff against the reference EDMX,
+### model/library.xml of odata2ts/test-reference-model. Four schemas survive -
+### Library.Catalog, Library.Circulation, PublisherRegistry and the container.
+GET {{host}}/$metadata
+
+### 404 - unknown entity set
+GET {{host}}/Unknown
