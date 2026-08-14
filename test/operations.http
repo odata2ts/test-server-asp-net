@@ -90,6 +90,13 @@ Content-Type: application/json
 
 { "Date": "2026-12-24" }
 
+### 400 - required parameter missing. A body carrying none of the declared
+### parameters binds to a null ODataActionParameters, not to an empty one.
+POST {{host}}/ClosureDay
+Content-Type: application/json
+
+{}
+
 ### 200
 POST {{host}}/NextInventoryNumber
 
@@ -99,11 +106,24 @@ Content-Type: application/json
 
 { "Obsolete": ["Fragment"] }
 
+### 200 - Obsolete is nullable in $metadata, so omitting it is a legal call
+### and nothing is filtered out
+POST {{host}}/CleanUpKeywords
+Content-Type: application/json
+
+{}
+
 ### 200 - returns a complex type
 POST {{host}}/YearEndClosing
 Content-Type: application/json
 
 { "Year": 2026 }
+
+### 400 - required parameter missing
+POST {{host}}/YearEndClosing
+Content-Type: application/json
+
+{}
 
 ### 200
 POST {{host}}/RunOverdueNotices
@@ -139,6 +159,12 @@ Content-Type: application/json
 
 { "MemberId": 1 }
 
+### 400 - required parameter missing
+POST {{host}}/Media({{book}})/Library.Circulation.Reserve
+Content-Type: application/json
+
+{}
+
 ### 200
 POST {{host}}/Members(1)/Library.Circulation.RunReminders
 
@@ -154,11 +180,23 @@ Content-Type: application/json
 
 { "MemberId": 999 }
 
+### 400 - required parameter missing
+POST {{host}}/Copies(MediumId={{book}},InventoryNumber=1)/Library.Circulation.CheckOut
+Content-Type: application/json
+
+{}
+
 ### 200 - returns a complex type
 POST {{host}}/Copies(MediumId={{book}},InventoryNumber=1)/Library.Circulation.AssessCondition
 Content-Type: application/json
 
 { "NewCondition": 4, "Remark": "Wasserschaden" }
+
+### 400 - required parameter missing; Remark alone does not carry the call
+POST {{host}}/Copies(MediumId={{book}},InventoryNumber=1)/Library.Circulation.AssessCondition
+Content-Type: application/json
+
+{ "Remark": "Wasserschaden" }
 
 ### 200 - returns the updated entity
 POST {{host}}/Loans({{loan}})/Library.Circulation.Renew

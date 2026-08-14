@@ -325,3 +325,21 @@ entity is refused with `400`.
 
 Carried for no other reason than to make the `Core.Immutable` term observable - the term only says
 anything about an update, and the set was read-only before.
+
+### Action parameters: `{}` binds to null, not to an empty dictionary
+
+A request body that carries **none** of the declared parameters hands the action a null
+`ODataActionParameters`. An action that reads its parameters straight off that argument therefore
+dereferences null and answers `500` before reaching its own "parameter is required" check - the request
+that is *most* obviously malformed is the one that fails worst. Every action taking parameters declares
+them nullable (`ODataActionParameters?`) and reads them through `ActionParameters.Get`, which folds the
+null case into "not supplied".
+
+What "not supplied" then means is decided by `$metadata`, not by convenience: a parameter with
+`Nullable="false"` may not be omitted, so `ClosureDay/Date`, `YearEndClosing/Year`,
+`Reserve/MemberId`, `CheckOut/MemberId` and `AssessCondition/NewCondition` answer `400`. Only
+`CleanUpKeywords/Obsolete` is nullable, so omitting it stays a legal call that filters nothing out.
+
+The `400` is `BadRequestODataResult`, not `ControllerBase.BadRequest`: only the OData result renders an
+error payload. A `BadRequestObjectResult` holding a string comes back as an `Edm.String` *value* with a
+`400` attached - a status code that contradicts its own body.
