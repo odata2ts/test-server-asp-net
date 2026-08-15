@@ -12,23 +12,24 @@ namespace LibraryService.Query;
 /// By default the binder does not compare either type directly. It takes both operands apart and rebuilds
 /// them as a single number - <c>year * 10000 + month * 100 + day</c> for a date, a sum of tick multiples
 /// for a time of day - and compares those. Against <c>List&lt;T&gt;</c> that is merely roundabout. Against
-/// a database it is the difference between a query that works and one that does not:
+/// a database, one of the two stops working altogether:
 ///
 /// <code>
-/// $filter=PublicationDate gt 2000-01-01     ->  WHERE CAST(strftime('%Y', "PublicationDate") AS INTEGER) * 10000
-///                                                   + CAST(strftime('%m', …) AS INTEGER) * 100
-///                                                   + CAST(strftime('%d', …) AS INTEGER) > @p
+/// $filter=PublicationDate gt 2000-01-01     ->  WHERE EXTRACT(YEAR FROM "PublicationDate") * 10000
+///                                                   + EXTRACT(MONTH FROM …) * 100
+///                                                   + EXTRACT(DAY FROM …) > @p
 ///
-/// $filter=OpensAt gt 09:30:00               ->  no translation at all, because there is no SQL for
-///                                               TimeOnly.Hour on a SQLite column - the request failed
+/// $filter=OpensAt gt 09:30:00               ->  no translation at all: EF cannot turn
+///                                               `OpensAt.Hour * 36000000000 + …` into SQL, and answers 500
 /// </code>
 ///
-/// The date form answers correctly but can never use an index, since no column appears on its own. The
-/// time form has no translation in any representation, which is why storing the column differently does
-/// not help - that was tried before this binder was written.
+/// The date form is correct but can never use an index, since no column appears on its own. The time form
+/// has no translation in any representation - it failed against SQLite and, as verified after the move, it
+/// fails against Postgres too, so it is the arithmetic itself and not the column type that has no SQL.
 ///
 /// So both are turned back into what the request actually said: one comparison between two values of the
-/// property's own CLR type.
+/// property's own CLR type. Postgres compares a <c>date</c> and a <c>time</c> directly and can use an
+/// index for either.
 ///
 /// The approach is the one worked out in
 /// https://github.com/OData/AspNetCoreOData/issues/1473, where the same arithmetic shows up as
@@ -163,14 +164,15 @@ public class DateComparisonBinder : FilterBinder
     /// Restates an <c>Edm.Date</c> literal as a <see cref="DateOnly" />, and refuses anything else.
     ///
     /// Deliberately not <see cref="DateTime" /> or <see cref="DateTimeOffset" />, even though both can hold
-    /// a date: the other operand then is not a date property but a *timestamp*, which is what
+    /// a date: the other operand then is not a date column but a *timestamp*, which is what
     /// <c>$filter=date(LoanedAt) eq 2026-06-01</c> produces - the library's <c>date()</c> does not truncate,
     /// it hands the whole timestamp through (visible in <c>$compute=date(LoanedAt)</c>, which returns
-    /// <c>2026-06-01T10:00:00Z</c>). Converting the literal here compared 10:00 against midnight and
-    /// answered "no match" for a loan that is plainly on that date - a wrong answer rather than an error.
+    /// <c>2026-06-01T10:00:00Z</c>). Converting the literal here would compare 10:00 against midnight and
+    /// answer "no match" for a loan that is plainly on that date - a wrong answer rather than an error.
     ///
     /// Returning null instead leaves that comparison to the base implementation, whose part-by-part
-    /// arithmetic is roundabout but correct. This binder takes over only what it can state more directly.
+    /// arithmetic is roundabout but correct, and which Postgres translates. So this binder now only takes
+    /// over what it can state more directly, and stays out of everything else.
     /// </summary>
     private static Expression? Constant(Date date, Type targetType) =>
         (Nullable.GetUnderlyingType(targetType) ?? targetType) == typeof(DateOnly)

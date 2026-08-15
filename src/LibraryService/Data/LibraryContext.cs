@@ -7,7 +7,7 @@ using Microsoft.Spatial;
 namespace LibraryService.Data;
 
 /// <summary>
-/// The store, backed by SQLite held in memory through EF Core.
+/// The store, backed by PostgreSQL through EF Core.
 ///
 /// The point of a real persistence layer here is that the query options stop being a LINQ-to-Objects
 /// exercise: <c>[EnableQuery]</c> now hands <c>$filter</c>, <c>$orderby</c>, <c>$expand</c> and friends to
@@ -16,13 +16,18 @@ namespace LibraryService.Data;
 /// cascading delete and the concurrency token on <see cref="Copy.Condition" /> become real for the same
 /// reason.
 ///
-/// It is still a *test* server: the database lives in memory, is created and seeded at startup, and every
-/// process therefore starts from the identical, well-known state. The keys in <see cref="LibrarySeed" />
-/// are fixed so that consumers can assert against them.
+/// This class maps the model and nothing else. It neither creates the schema nor fills it: both are SQL
+/// under <c>db/</c>, applied by the database before the service is ever reachable - see README.md. What
+/// EF still owns is the mapping *contract* the two have to agree on, which is why <c>db/01-schema.sql</c>
+/// is generated from this configuration rather than written by hand.
 ///
-/// Three parts of the reference model have no faithful relational form - spatial values, the open type's
-/// dynamic properties and the untyped property. Each goes through a converter in
-/// <see cref="ValueConversions" />, and each converter's cost is recorded there and in FEATURE-COVERAGE.md.
+/// It is still a *test* server: the database is thrown away with the container, so every start is the
+/// identical, well-known state and a restart is a reset. The keys in the seed are fixed so that consumers
+/// can assert against them.
+///
+/// Two parts of the reference model have no faithful relational form - spatial values and the pair of
+/// dynamic/untyped properties. Each goes through a converter in <see cref="ValueConversions" />, and each
+/// converter's cost is recorded there and in FEATURE-COVERAGE.md. Everything else is stored as itself.
 /// </summary>
 public sealed class LibraryContext(DbContextOptions<LibraryContext> options) : DbContext(options)
 {
@@ -47,7 +52,7 @@ public sealed class LibraryContext(DbContextOptions<LibraryContext> options) : D
     /// </summary>
     public DbSet<StoredContent> Contents => Set<StoredContent>();
 
-    /// <summary>The <c>MainBranch</c> singleton. Ordered rather than "the first row": SQLite makes no promise.</summary>
+    /// <summary>The <c>MainBranch</c> singleton. Ordered rather than "the first row": SQL makes no promise.</summary>
     public Branch MainBranch => Branches.OrderBy(b => b.Id).First();
 
     protected override void OnModelCreating(ModelBuilder model)
@@ -61,6 +66,17 @@ public sealed class LibraryContext(DbContextOptions<LibraryContext> options) : D
         // database. A test server whose member ids depend on insert order is one consumers cannot assert
         // against, so the four integer keys that EF would otherwise turn into identity columns are pinned
         // here. The Guid keys are caller-assigned by convention already.
+        // Every timestamp in the model, in one place rather than property by property: the UTC contract is
+        // a property of the service, not of any one entity, and a new DateTimeOffset should not be able to
+        // arrive without it. See ValueConversions.UtcOnly.
+        foreach (var property in model.Model.GetEntityTypes()
+            .SelectMany(entity => entity.GetProperties())
+            .Where(property => property.ClrType == typeof(DateTimeOffset)
+                || property.ClrType == typeof(DateTimeOffset?)))
+        {
+            property.SetValueConverter(ValueConversions.UtcOnly());
+        }
+
         model.Entity<Member>().Property(m => m.Id).ValueGeneratedNever();
         model.Entity<Branch>().Property(b => b.Id).ValueGeneratedNever();
         model.Entity<Bookmobile>().Property(b => b.Id).ValueGeneratedNever();
@@ -84,7 +100,6 @@ public sealed class LibraryContext(DbContextOptions<LibraryContext> options) : D
         // - which is what the alternate-key route and the `/Media/Library.Catalog.PrintMedium` type cast
         // compile to - would name a type the model does not know and fail to translate.
         model.Entity<PrintMedium>();
-        model.Entity<AudioMedium>().Property(a => a.Duration).HasConversion(ValueConversions.DurationTicks());
 
         medium.HasDiscriminator<string>("MediumKind")
             .HasValue<Book>(nameof(Book))
@@ -95,8 +110,8 @@ public sealed class LibraryContext(DbContextOptions<LibraryContext> options) : D
             .HasValue<EBook>(nameof(EBook))
             .HasValue<CollectorsItem>(nameof(CollectorsItem));
 
-        // Primitive collection: EF stores it as a JSON array in one column, and `Keywords/any(...)` still
-        // translates - SQLite reaches into it with json_each.
+        // Primitive collection, stored as a native text[] rather than as JSON, so `Keywords/any(...)`
+        // translates to an array operation rather than to a walk over a document.
         medium.PrimitiveCollection(m => m.Keywords);
 
         // The `Sample` stream property is a link in the payload, never a value. Its bytes live in
@@ -119,12 +134,23 @@ public sealed class LibraryContext(DbContextOptions<LibraryContext> options) : D
 
         // Open type and Edm.Untyped: JSON, because a relational column has no other shape to offer. Both
         // are consequently invisible to $filter and $orderby - see ValueConversions.
+        //
+        // json and deliberately not jsonb. jsonb is the better storage type in general, but it normalises
+        // the document: it discards key order, and these keys come back out in exactly the order OData
+        // then writes them in, because the dictionary is materialised from the stored JSON. The open type's
+        // payload silently reordered itself to `Insured, Appraisal` under jsonb.
+        //
+        // json keeps the text verbatim, so the order the seed declares is the order a consumer sees. What
+        // jsonb would have bought - indexing and the containment operators - is worth nothing here anyway,
+        // since OData has no syntax that reaches into an undeclared property and nothing ever queries them.
         var collectorsItem = model.Entity<CollectorsItem>();
         collectorsItem.Property(c => c.DynamicProperties)
             .HasColumnName("DynamicProperties")
+            .HasColumnType("json")
             .HasConversion(ValueConversions.DynamicProperties(), ValueConversions.DynamicPropertiesComparer());
         collectorsItem.Property(c => c.ExtraData)
             .HasColumnName("ExtraData")
+            .HasColumnType("json")
             .HasConversion(ValueConversions.Untyped(), ValueConversions.UntypedComparer());
         collectorsItem.HasOne(c => c.StorageLocation).WithMany().OnDelete(DeleteBehavior.SetNull);
 
@@ -146,8 +172,9 @@ public sealed class LibraryContext(DbContextOptions<LibraryContext> options) : D
             // reference model does not have.
             member.OwnsMany(m => m.PreviousAddresses).ToJson();
 
-            member.Property(m => m.Balance).HasConversion(ValueConversions.ScaledDecimal(2));
-            member.Property(m => m.ActiveSince).HasConversion(ValueConversions.UtcTicks());
+            // numeric(9,2), which is the Precision/Scale EdmModelBuilder declares for this property. The
+            // facet in $metadata and the column now say the same thing, and the database enforces it.
+            member.Property(m => m.Balance).HasPrecision(9, 2);
 
             member.HasOne(m => m.IdDocument).WithOne().HasForeignKey<Member>("IdDocumentId")
                 .OnDelete(DeleteBehavior.SetNull);
@@ -180,16 +207,12 @@ public sealed class LibraryContext(DbContextOptions<LibraryContext> options) : D
         model.Entity<Loan>(loan =>
         {
             loan.HasKey(l => l.Id);
-            loan.Property(l => l.LateFee).HasConversion(ValueConversions.ScaledDecimal(2));
-            loan.Property(l => l.LoanedAt).HasConversion(ValueConversions.UtcTicks());
-            loan.Property(l => l.ReturnedAt).HasConversion(ValueConversions.UtcTicks());
+            loan.Property(l => l.LateFee).HasPrecision(5, 2);
             loan.HasOne(l => l.Copy).WithMany().OnDelete(DeleteBehavior.SetNull);
         });
 
         model.Entity<Reservation>().HasKey(r => r.Id);
-        model.Entity<Reservation>().Property(r => r.ReservedAt).HasConversion(ValueConversions.UtcTicks());
         model.Entity<IdDocument>().HasKey(d => d.Id);
-        model.Entity<IdDocument>().Property(d => d.UploadedAt).HasConversion(ValueConversions.UtcTicks());
 
         model.Entity<Branch>(branch =>
         {

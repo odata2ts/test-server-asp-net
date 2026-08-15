@@ -4,7 +4,8 @@ An **ASP.NET Core** implementation of the odata2ts **"Library"** OData V4 refere
 to run integration tests against, shipped as a container image, and a report on how much of OData V4 /
 4.01 ASP.NET Core OData actually covers.
 
-C# / .NET, backed by SQLite held in memory through EF Core. No external services, nothing to install.
+C# / .NET, backed by PostgreSQL through EF Core. The database ships inside the image, so there is still
+only one container to start and nothing to install.
 
 ## Why this exists
 
@@ -16,10 +17,10 @@ own integration tests, which start it, generate against its `$metadata` and issu
 docker run --rm -p 4004:4004 ghcr.io/odata2ts/test-server-asp-net:latest
 ```
 
-The database is created and seeded at startup from fixed keys, so
-every start is the identical, well-known state and a restart is a reset. Nothing to mount, migrate or wait
-for, and no response that depends on insert order or wall-clock time - which is what makes the server
-assertable from an automated suite.
+The database lives inside that one container and is built from `db/*.sql` on every start, so every start is
+the identical, well-known state and a restart is a reset. Nothing to compose, mount, migrate or wait for,
+and no response that depends on insert order or wall-clock time - which is what makes the server assertable
+from an automated suite.
 
 **Second: to document what ASP.NET Core OData can do.** The model it serves is not an example
 application, it is the odata2ts reference model, a deliberately feature-dense probe of the OData spec that
@@ -50,8 +51,11 @@ The OData library is `Microsoft.AspNetCore.OData` **9.5.0** - the latest *stable
 to build and to serve correct `$metadata` before it was adopted. The LTS rule governs the platform; a
 preview NuGet in a reference test server would be the wrong place to take a risk.
 
-`Microsoft.EntityFrameworkCore.Sqlite` is **10.0.11**, which ships with the same LTS and needs no separate
-policy.
+`Npgsql.EntityFrameworkCore.PostgreSQL` is **10.0.3**, which tracks the same LTS and needs no separate
+policy. The database is **PostgreSQL 18**, the current stable major, and the version is pinned in two
+places that have to agree: the `postgresql-18` packages in the `Dockerfile` and
+`DatabaseInit.PostgresImage`, which is the image a local run starts. Ubuntu 24.04 ships 16, so the image
+takes 18 from PGDG rather than from the distribution.
 
 ## Getting started
 
@@ -68,14 +72,26 @@ docker run --rm -p 4004:4004 ghcr.io/odata2ts/test-server-asp-net:latest
 
 ### Locally
 
-Requires the .NET 10 SDK.
+Requires the .NET 10 SDK and a running Docker daemon.
 
 ```bash
 dotnet run --project src/LibraryService
 ```
 
+Still a one-liner: with no connection string configured the service starts a Postgres container itself,
+applies the same `db/*.sql` and waits for it. Nothing to install or set up, and the container goes away
+with the process.
+
 Service root: <http://localhost:5091/odata/v4/library/> ·
 metadata: <http://localhost:5091/odata/v4/library/$metadata>
+
+To point it at a Postgres of your own instead, set a connection string - which is also what the published
+image does:
+
+```bash
+ConnectionStrings__Library="Host=localhost;Database=library;Username=library;Password=library" \
+  dotnet run --project src/LibraryService
+```
 
 ### Trying it out
 
@@ -91,9 +107,11 @@ executable counterpart to FEATURE-COVERAGE.md and run in any `.http` client. See
 | ------------------------------------- | --------------------------------------------------------------------- |
 | `src/LibraryService/Model/`           | The CLR types, one file per schema of the reference model              |
 | `src/LibraryService/EdmModelBuilder.cs` | The EDM model, built explicitly wherever a convention would not do   |
-| `src/LibraryService/Data/`            | The `DbContext`, the seed with its fixed keys, and the value converters |
+| `src/LibraryService/Data/`            | The `DbContext`, the two value converters, and how the database is brought up |
 | `src/LibraryService/Controllers/`     | Entity sets and singleton; all functions and actions                   |
 | `src/LibraryService/Query/`           | `$search` binder - without it the option is silently ignored - and the replacement filter binder |
+| `db/`                                 | The schema (generated from the EF model) and the seed with its fixed keys, as SQL |
+| `docker-entrypoint.sh`                | Starts Postgres, applies `db/*.sql`, then the service - in that order  |
 | `test/`                               | The `.http` request collection, one file per category                  |
 
 Streams (`$value`, the `Sample` stream property, contained chapters) and `$ref` live in
@@ -111,8 +129,11 @@ Notes worth knowing before editing:
   runs, and is never used.
 - Binding parameters are renamed to the reference model's names, because `EntitySetPath` refers to them
   by name.
-- The SQLite connection is opened once in `Program.cs` and **never closed**: an in-memory database lives
-  exactly as long as a connection to it is open.
+- The **schema and the seed are SQL** under `db/`, applied by Postgres before the service starts - there is
+  no seeding code. `db/01-schema.sql` is *generated* from the EF model, so regenerate it after changing the
+  model: `dotnet run --project src/LibraryService -- --emit-schema ../../db/01-schema.sql`.
+- **Timestamps are UTC only.** A non-zero offset is answered with 400, deliberately - see
+  [FEATURE-COVERAGE.md](FEATURE-COVERAGE.md).
 - **Keys are caller-assigned everywhere**, never generated by the database. The change tracker therefore
   cannot recognise a new entity by its key: a new entity reached only through a tracked entity's
   navigation property is taken for an existing row and written with an `UPDATE` that matches nothing. Add

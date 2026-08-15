@@ -8,7 +8,17 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OData" Version="9.5.0" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.11" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+
+    <!-- Not a test dependency here: with no connection string configured the service starts its own
+         Postgres container, which is what keeps `dotnet run` a one-liner. See Program.cs. -->
+    <PackageReference Include="Testcontainers.PostgreSql" Version="4.14.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The schema and the seed travel with the binary, so that a local run and the published image find
+         them at the same path and apply the same SQL. -->
+    <Content Include="../../db/*.sql" Link="db/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

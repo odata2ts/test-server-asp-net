@@ -7,7 +7,7 @@ reasoning behind the rows that carry an **impl** tick.
 
 Measured against **.NET 10.0.10** with **Microsoft.AspNetCore.OData 9.5.0**
 (→ `Microsoft.OData.ModelBuilder` 2.0.0, `Microsoft.OData.Edm`/`Core` 8.4.0) and
-**Microsoft.EntityFrameworkCore.Sqlite 10.0.11**.
+**Npgsql.EntityFrameworkCore.PostgreSQL 10.0.3** against **PostgreSQL 18**.
 
 ## The EDM model
 
@@ -17,12 +17,11 @@ Measured against **.NET 10.0.10** with **Microsoft.AspNetCore.OData 9.5.0**
 type, so a model with four schemas silently collapses into one. The types have to be put back explicitly
 from their CLR namespaces afterwards (`AlignNamespacesWithClrTypes`).
 
-Enums are worse: one reached only through a property is registered so late that a namespace fix-up misses
-it. They have to be registered explicitly with `EnumType<T>()` first.
+Enums have to be registered explicitly with `EnumType<T>()` first.
 
 ### `Partner` on both sides of every association
 
-This one hides well enough to look impossible: `NavigationPropertyConfiguration.Partner` has an
+`NavigationPropertyConfiguration.Partner` has an
 `internal` setter, there is no `WithMany`/`WithRequired`/`HasPartner`, and the convention builder does
 not infer a partner even though both sides are declared. But `HasRequired` and `HasOptional` each carry a
 three-argument overload whose last argument *is* the partner - in a single-valued and a
@@ -40,8 +39,8 @@ against. `OnDelete="Cascade"` on `Member/Loans` survives next to it.
 
 ### Binding parameter names
 
-The builder names every binding parameter `bindingParameter`. That breaks `EntitySetPath="medium/Copies"`,
-which refers to the parameter by name. `SetBindingParameter(name, type)` fixes it, so the model uses the
+In order to persuade the builder to not name every binding parameter `bindingParameter`, 
+we use `SetBindingParameter(name, type)`, so the model uses the
 reference names (`medium`, `member`, `copy`, `loan`, `loans`, `media`).
 
 ### Overload pairs
@@ -118,52 +117,111 @@ not make anything translate; it only ensures a limit is visible.
 
 ## Persistence
 
-The store is SQLite, held in memory, through EF Core. Against a database the query options have to become
-SQL, which is what a consumer of a real OData service meets. The SQLite connection is opened once in
-`Program.cs` and **never closed**: an in-memory database lives exactly as long as a connection to it is
-open.
+The store is **PostgreSQL 18** through EF Core (Npgsql). Against a database the query options have to
+become SQL, which is what a consumer of a real OData service meets.
 
-### What SQLite cannot store, and what it was traded for
+It runs *inside* the published image, next to the service, rather than in a second container - see
+[The container](#the-container) below - so consuming this server is still `docker run -p 4004:4004` with
+nothing to compose or mount. The data directory is rebuilt on every start, so a restart is a reset.
 
-Four types in the reference model have no faithful SQLite column. Each goes through a value converter in
+### What a relational column cannot store
+
+Two things in the reference model, down from five. Each goes through a value converter in
 [`Data/ValueConversions.cs`](src/LibraryService/Data/ValueConversions.cs):
 
-| Type                                              | Stored as                              | What it costs                                                                                                                                                                                                |
-|---------------------------------------------------|----------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `Edm.Geography*` / `Edm.Geometry*` (6 properties) | WKT text                               | `geo.*` functions can never translate. They did not work over LINQ to Objects either, so nothing is lost in practice.                                                                                        |
-| `Edm.Decimal` (`Balance`, `LateFee`)              | integer scaled by the declared `Scale` | nothing - see below                                                                                                                                                                                          |
-| `Edm.DateTimeOffset` (5 properties)               | UTC ticks                              | the offset, and the date-part functions (`hour()`, `year()`, `now()`) - see below. Only the instant survives, so `+02:00` reads back as the same moment in UTC. Every timestamp in the model is UTC already. |
-| `Edm.Duration`                                    | ticks                                  | the date-part functions, as above                                                                                                                                                                            |
-| open type's dynamic properties, `Edm.Untyped`     | JSON                                   | they can never appear in `$filter` or `$orderby`                                                                                                                                                             |
+| Type                                              | Stored as | What it costs                                                                                                                        |
+|---------------------------------------------------|-----------|--------------------------------------------------------------------------------------------------------------------------------------|
+| `Edm.Geography*` / `Edm.Geometry*` (6 properties) | WKT text  | `geo.*` functions can never translate. They did not work over LINQ to Objects either, so nothing is lost in practice.                 |
+| open type's dynamic properties, `Edm.Untyped`     | `json`    | they can never appear in `$filter` or `$orderby` - though the URI parser refuses an undeclared property with 400 well before the store |
 
 `Microsoft.Spatial` is the interesting one: EF Core's spatial support is NetTopologySuite-only and would
-additionally want the SpatiaLite native extension, so the type system OData itself speaks has no EF
-provider at all. WKT round-trips it exactly, SRID included, and `$metadata` and every payload are
-unchanged.
+additionally want PostGIS, so the type system OData itself speaks has no EF provider at all. WKT
+round-trips it exactly, SRID included, and `$metadata` and every payload are unchanged.
 
-**Decimal deserves the detail**, because the obvious mapping is the dangerous one. SQLite has no decimal
-type. Scaling to an integer keeps the value exact and both work, and it turns the `Precision`/`Scale`
-facets the model already declares into the converter's contract. It is visible in one payload: the
-converter reconstructs at the declared `Scale`, so `Member.Balance` serialises a whole value as `0.00`
-rather than `0`. `DateTimeOffset` and `Duration` went the same way for the same reason, except that EF
-refused to translate those outright instead of answering wrongly - and there the trade is not free, since
-the extraction functions go with it.
+The JSON column is deliberately `json` and **not** `jsonb`. jsonb normalises the document, and key order is
+not decoration here: the dictionary materialises from the stored JSON in that order, and OData writes the
+dynamic properties out in the order it finds them - so jsonb silently reordered the open type's payload to
+`Insured, Appraisal`. `json` keeps the text verbatim. What jsonb would have bought - indexing, containment
+operators - is worth nothing when nothing can query the column anyway.
 
-`LoanedAt` is stored as an integer tick count, and no SQL pulls an hour back out of one. The alternative is
-worse rather than better, and was measured rather than assumed: with EF's default mapping **every one** of
-those requests fails, comparison and `$orderby` included, and the timestamps serialise differently as well.
-Ticks buy the operators the reference model exercises and cost the extraction functions. `Edm.Date` is
-unaffected - `year(PublicationDate)` works - because a date needs no converter.
+### What the move from SQLite removed
 
-### The seed
+Until 2026-08-15 the store was SQLite in memory, and three further types needed converters, because SQLite
+has no column for any of them: `Edm.Decimal` was scaled to an integer, `Edm.DateTimeOffset` and
+`Edm.Duration` were stored as tick counts. That was not a free trade - it cost the date-part functions
+(`hour()`, `year()`, `now()` all answered 500) and, in the case of `date()`, produced the only silently
+wrong answer in the service.
+
+Postgres has `numeric`, `timestamptz` and `interval`, so all three properties are now stored as themselves:
+
+- **`Edm.Decimal`** is `numeric(9,2)` / `numeric(5,2)`, taken from the `Precision`/`Scale` the model
+  already declares, so `$metadata` and the column now state the same thing and the database enforces it.
+  `Member.Balance` still serialises `0.00` rather than `0` - that is the declared scale, not an artefact.
+- **`Edm.DateTimeOffset`** is `timestamptz`, and every date-part function over it now translates.
+- **`Edm.Duration`** is `interval`.
+
+One converter did come back, and it is a guard rather than a conversion: Npgsql refuses a `DateTimeOffset`
+whose offset is not zero, so a client sending `+02:00` - legal `Edm.DateTimeOffset` - would have got a 500
+out of the provider. `ValueConversions.UtcOnly` turns that into a deliberate **400** naming the property
+and the UTC value to send instead. It is applied to every `DateTimeOffset` in the model at once, in
+`OnModelCreating`, because the UTC contract belongs to the service and not to any one entity, and it is
+reached from both directions a timestamp can arrive from - a write body and a `$filter` literal - because
+EF puts converters in front of both. `UtcOnlyException` exists purely so the error middleware can tell that
+apart from a genuine server fault and answer 400 rather than 500. The deviation is recorded in
+FEATURE-COVERAGE.md.
+
+`Keywords` is now a native `text[]` rather than a JSON array, so `Keywords/any(...)` translates to an array
+operation.
+
+### Schema and seed
+
+Neither is code. [`db/01-schema.sql`](db/01-schema.sql) and [`db/02-seed.sql`](db/02-seed.sql) are applied
+by Postgres itself, from `/docker-entrypoint-initdb.d`, before the service is started - so the service has
+no seeding path at all, no "has it been seeded yet" check, and no startup order to get wrong. The database
+is already correct when the service first reaches it.
+
+The schema is **generated, not hand-written**, because EF owns the mapping - the discriminator, the shadow
+foreign keys, the column names owned types get - and two hand-maintained descriptions of one mapping would
+drift. Regenerate it after changing the model:
+
+```bash
+dotnet run --project src/LibraryService -- --emit-schema ../../db/01-schema.sql
+```
+
+The seed is hand-maintained SQL. Statement order is load-bearing twice: across tables it satisfies the
+foreign keys, and within a table it fixes the physical row order, which is what an unordered `/Media`
+answers in. That order is not promised by OData, but consumers had a stable one and it is cheap to keep.
+It also *replaced* a workaround - the old code seed had to call `SaveChanges` once per row, because EF
+groups the inserts of one `SaveChanges` by entity type and permuted `/Media` into alphabetical order by CLR
+type. Plain `INSERT`s have no such behaviour.
 
 Every key in this model is caller-assigned - fixed GUIDs in the seed, `max(Id) + 1` for members - because a
 test server whose keys depend on insert order is one nobody can assert against.
 
-Collection order without `$orderby` is not promised by OData, but consumers had a stable one, and EF groups
-the inserts of one `SaveChanges` by entity type, which permuted `/Media` into alphabetical order by CLR
-type. [`LibrarySeed`](src/LibraryService/Data/LibrarySeed.cs) therefore inserts media and copies one at a
-time to preserve it.
+### The container
+
+The published image carries a Postgres of its own. That is not the usual arrangement - two containers and
+a compose file would be - but the single `docker run -p 4004:4004` is the contract consumers already
+depend on, and a database is not a reason to make every consumer learn a new one.
+
+[`docker-entrypoint.sh`](docker-entrypoint.sh) is the whole of it, and the order is the point: `initdb`,
+start Postgres on the loopback interface, apply `db/*.sql` with `ON_ERROR_STOP=1`, only then `exec` the
+service with a connection string in the environment. `set -e` means a broken seed exits the container
+instead of serving a half-filled model. `exec` makes the service PID 1, so `docker stop` reaches it.
+
+Two details that are easy to get wrong:
+
+- **`su` resets `PATH`.** The `ENV PATH` in the Dockerfile applies to root; the postgres shell would not
+  find `initdb` or `pg_ctl`, so the entrypoint calls them by absolute path.
+- **Postgres 18 comes from PGDG**, not from Ubuntu 24.04, which ships 16. It has to be the same major
+  version as `DatabaseInit.PostgresImage`, or a local run and the image would not be the same server.
+
+Locally there is no entrypoint, so the service does it itself: with **no connection string configured** it
+starts a Postgres container through Testcontainers, mapping the same `db/*.sql` into
+`/docker-entrypoint-initdb.d`, and waits for it. That keeps `dotnet run --project src/LibraryService` a
+one-liner with nothing installed but Docker, and it is why Testcontainers is a normal dependency of the
+service project rather than a test-only one. A configured connection string always wins, which is how the
+image bypasses this path entirely.
 
 ### A trap the change tracker sets
 
@@ -201,17 +259,19 @@ The stock filter binder compares neither type directly. It takes both operands a
 single number, then compares those:
 
 ```
-$filter=PublicationDate gt 2000-01-01  ->  WHERE CAST(strftime('%Y', "PublicationDate") AS INTEGER) * 10000
-                                               + CAST(strftime('%m', …) AS INTEGER) * 100
-                                               + CAST(strftime('%d', …) AS INTEGER) > @p
+$filter=PublicationDate gt 2000-01-01  ->  WHERE EXTRACT(YEAR FROM "PublicationDate") * 10000
+                                               + EXTRACT(MONTH FROM …) * 100
+                                               + EXTRACT(DAY FROM …) > @p
 
 $filter=OpensAt gt 09:30:00            ->  (long)"OpensAt".Hour * 36000000000 + …   no translation, 500
 ```
 
 Over `List<T>` that is merely roundabout. Over a database the date form still answers correctly but can
 never use an index - the column never appears on its own - and the time-of-day form has no SQL at all, so
-the request failed outright. Not a storage problem: converting the column to ticks was tried first and does
-not help, because the arithmetic is built from `.Hour`/`.Minute` before the provider ever sees it.
+the request fails outright. Not a storage problem, and verified twice: it failed the same way against
+SQLite and against Postgres, because the arithmetic is built from `.Hour`/`.Minute` before the provider
+ever sees it. The date form is the only one that changed with the move - SQLite needed `strftime` where
+Postgres uses `EXTRACT`, and both are correct.
 
 The behaviour is not configurable - `ExpressionBinderHelper.CreateDateBinaryExpression` and its time
 counterpart are internal - so
@@ -231,7 +291,7 @@ The binder stands down when null propagation is on - a LINQ-to-Objects source - 
 implementation's three-valued `bool?` is what the surrounding expression expects.
 
 **It also has to stand down when the operand is not really a date.** This is the trap, and it produced a
-wrong answer rather than an error:
+wrong answer rather than an error for some time:
 
 ```
 $filter=date(LoanedAt) eq 2026-06-01   ->   no match, for a loan that is plainly on that date
@@ -242,9 +302,13 @@ The library's `date()` does not truncate - it hands the whole timestamp through,
 therefore a `DateTimeOffset`, not a `DateOnly`, and the binder used to convert the `Edm.Date` literal to
 match it - producing midnight, and comparing 10:00 against 00:00.
 
-So `Constant` accepts **only** `DateOnly` for `Edm.Date` and `TimeOnly` for `Edm.TimeOfDay`, and returns
-null for anything else, which hands the comparison back to the base implementation - whose part-by-part
-arithmetic is roundabout but correct. The binder takes over only what it can state more directly.
+So `Constant` now accepts **only** `DateOnly` for `Edm.Date` and `TimeOnly` for `Edm.TimeOfDay`, and
+returns null for anything else, which hands the comparison back to the base implementation - whose
+part-by-part arithmetic is roundabout but correct, and which Postgres translates. The binder takes over
+only what it can state more directly.
+
+This was found while moving to Postgres, but it was never a storage problem: the wrong answer had been
+attributed to the tick storage, and survived its removal unchanged.
 
 ## Controllers
 
@@ -259,30 +323,6 @@ kept them. They are read now.
 A duplicate composite key is refused with `409`. Accepting it left two copies with the same key in the
 store, after which *every* keyed read of that copy failed with "SingleResult must have zero or one
 elements" - a store that could not be read from any more.
-
-### Patching an entity set whose declared type is abstract
-
-`Media` is declared as `Library.Catalog.Medium`, which is abstract, so every entity in it is of a derived
-type - and OData JSON requires the `@odata.type` annotation whenever an instance's type is derived from the
-declared one. A partial update therefore has to name the type it is patching:
-
-```
-PATCH /Media(<id>)   {"Title": "Neu"}                                          400
-PATCH /Media(<id>)   {"@odata.type": "#Library.Catalog.Book", "Title": "Neu"}  204
-```
-
-The 400 is this implementation's, not the library's. Without the annotation the deserializer has no type to
-construct and model binding hands the action a **null** delta, with no error of its own - so the shape of
-the failure is a choice each implementation makes. Dereferencing it answers 500 to what is really a
-malformed request; skipping it silently answers 204 to an update that was never applied, which is worse.
-All five `PATCH` actions here take a nullable delta and answer 400, except where a null delta is still
-usable: on `Copy` and `Member` the deserializer also rejects a body that binds a navigation to null, and
-those two read the binding out of the raw body themselves, so they answer 400 only when there is no binding
-either.
-
-Worth knowing when generating a client: a `PATCH` builder that emits only the changed properties produces
-the first shape, and against this entity set that is not a valid payload. The other entity sets are
-declared with concrete types and take an untyped body.
 
 ### Binding an existing entity: `@odata.bind` and `{"@id": …}`
 

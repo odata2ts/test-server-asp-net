@@ -55,8 +55,9 @@ public class LibraryOperationsController(LibraryContext db) : ODataController
     public LoanStats LoanStatistics([FromODataUri] DateRange? period)
     {
         // Materialised first on purpose: the period is compared as a DateOnly against the date part of a
-        // DateTimeOffset, which SQLite cannot do. This is an operation, not a query option - nothing about
-        // the reference model is being probed by pushing it into SQL.
+        // DateTimeOffset, and that comparison is done in memory rather than pushed into SQL. This is an
+        // operation, not a query option - nothing about the reference model is being probed by translating
+        // it, and over a seed of one loan there is nothing to gain either.
         var loans = db.Loans.AsEnumerable();
         if (period?.From is { } from)
         {
@@ -198,8 +199,8 @@ public class LibraryOperationsController(LibraryContext db) : ODataController
 
     /// <summary>
     /// Case-insensitive title match. <c>StringComparison.OrdinalIgnoreCase</c> has no SQL translation, so
-    /// the comparison is spelled out in a form SQLite does translate - <c>LIKE</c> is case-insensitive for
-    /// ASCII by itself, and lowering both sides makes that explicit rather than incidental.
+    /// the comparison is spelled out in a form the provider does translate: lowering both sides is
+    /// explicit about the intent and leaves nothing to the column's collation.
     /// </summary>
     private IQueryable<Medium> Matching(string term) =>
         db.Media.Where(m => m.Title.ToLower().Contains(term.ToLower()));
