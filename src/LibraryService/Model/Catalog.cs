@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using LibraryService.Annotations;
 using Microsoft.OData.ModelBuilder;
 
 // The CLR namespace becomes the EDM namespace, which is how the four schemas of the reference model
@@ -13,20 +14,31 @@ namespace Library.Catalog;
 [Flags]
 public enum Amenities
 {
+    [Core.Description("Step-free access to every public area.")]
     WheelchairAccessible = 1,
     Parking = 2,
     Café = 4,
     KidsArea = 8,
     StudyRoom = 16,
+
+    [Core.Description("All of the above - every amenity this library records.")]
     FullService = 31,
 }
 
 /// <summary>Enum with a non-default underlying type, reference model <c>Library.Catalog.AvailabilityStatus</c>.</summary>
+[Core.Description("Whether a copy can be borrowed right now, and if not, why not.")]
 public enum AvailabilityStatus : byte
 {
+    [Core.Description("On the shelf and loanable.")]
     Available = 0,
+
+    [Core.Description("Borrowed; due back on the loan's due date.")]
     OnLoan = 1,
+
+    [Core.Description("With the bindery or the repair desk.")]
     InRepair = 2,
+
+    [Core.Description("Not found at the last inventory.")]
     Missing = 3,
 }
 
@@ -65,17 +77,29 @@ public class MediumStats
 /// (<c>Medium</c> → <c>PrintMedium</c> → <c>Magazine</c> → <c>TradeJournal</c>) and the carrier of the
 /// features that are interesting in *combination* with inheritance: streams, open types, containment.
 /// </summary>
+[Core.Description("Anything the library holds and lends out, in any form.")]
 public abstract class Medium
 {
     public Guid Id { get; set; }
     [MaxLength(200)]
     public string Title { get; set; } = "";
+
+    /// <summary>The medium's own language, not the language the client asked for.</summary>
     [MaxLength(40)]
+    [Core.Description("Language of the medium itself, as an ISO 639-1 code.")]
     public string? Language { get; set; }
+
     public DateOnly? PublicationDate { get; set; }
+
+    [Validation.MaxItems(20)]
+    [Core.Description("Free-text subject keywords for cataloguing.")]
     public ICollection<string> Keywords { get; set; } = [];
 
     /// <summary>Server-computed, annotated <c>Core.Computed</c> in the reference model.</summary>
+    [Core.Computed]
+    [Validation.Minimum(0.0)]
+    [Validation.Maximum(10.0)]
+    [Core.Description("How often the medium is borrowed, on a 0-10 scale.")]
     public double? PopularityScore { get; set; }
 
     public ICollection<Circulation.Copy> Copies { get; set; } = [];
@@ -86,13 +110,21 @@ public abstract class PrintMedium : Medium
 {
     /// <summary>Reference model: <c>Library.Catalog.ISBN</c>, a <c>TypeDefinition</c> over <c>Edm.String</c>.</summary>
     [MaxLength(13)]
+    [Validation.Pattern("^[0-9]{13}$")]
+    [Core.Description("ISBN-13, digits only and without separators.")]
     public string? ISBN { get; set; }
 }
 
 public class Book : PrintMedium
 {
+    [Validation.Minimum(1)]
     public short PageCount { get; set; }
+
+    [Validation.Minimum(0)]
+    [Validation.Maximum(18)]
+    [Core.Description("Lowest age in years the book is released for; 0 means no restriction.")]
     public byte AgeRating { get; set; }
+
     public PublisherRegistry.Publisher? Publisher { get; set; }
 }
 
@@ -108,6 +140,8 @@ public class TradeJournal : Magazine
 
 public abstract class AudioMedium : Medium
 {
+    /// <summary>Playing time, recorded to the minute - which is what the granularity term states.</summary>
+    [Measures.DurationGranularity(Measures.DurationGranularityType.Minutes)]
     public TimeSpan? Duration { get; set; }
 }
 
@@ -116,6 +150,7 @@ public class Audiobook : AudioMedium
     public string? Narrator { get; set; }
 
     /// <summary><c>Edm.Stream</c> property, next to a contained collection of media entities.</summary>
+    [Core.AcceptableMediaTypes("audio/mpeg")]
     public Stream? Sample { get; set; }
 
     /// <summary>Contained entities (<c>ContainsTarget="true"</c>) - addressable only through the parent.</summary>
@@ -124,6 +159,7 @@ public class Audiobook : AudioMedium
 
 /// <summary>Media entity (<c>HasStream="true"</c>) that is at the same time a contained entity.</summary>
 [MediaType]
+[Core.AcceptableMediaTypes("audio/mpeg")]
 public class AudiobookChapter
 {
     public int Id { get; set; }
@@ -137,6 +173,7 @@ public class DVD : AudioMedium
 
 /// <summary>Media entity inside the inheritance hierarchy.</summary>
 [MediaType]
+[Core.AcceptableMediaTypes("application/epub+zip")]
 public class EBook : Medium
 {
     [MaxLength(20)]
@@ -144,6 +181,8 @@ public class EBook : Medium
 }
 
 /// <summary>Open type - accepts undeclared properties - with an <c>Edm.Untyped</c> property on top.</summary>
+[Core.AdditionalProperties]
+[Core.Description("A rarity whose describing properties are not known in advance.")]
 public class CollectorsItem : Medium
 {
     public object? ExtraData { get; set; }

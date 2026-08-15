@@ -17,6 +17,23 @@ GET {{host}}/
 ### 200 - the central comparison artifact. Diff against the reference EDMX,
 ### model/library.xml of odata2ts/test-reference-model. Four schemas survive -
 ### Library.Catalog, Library.Circulation, PublisherRegistry and the container.
+###
+### The seven annotations the reference model declares, and where they land:
+###   Medium/PopularityScore  <Annotation Term="…Core.V1.Computed" Bool="true"/>
+###   Loan/LoanedAt           <Annotation Term="…Core.V1.Immutable" Bool="true"/>
+###   Member/ActiveSince      <Annotation Term="…Core.V1.ComputedDefaultValue" Bool="true"/>
+###   Member/Balance          <Annotation Term="…Core.V1.Permissions">
+###                             <EnumMember>…Core.V1.Permission/Read</EnumMember>
+###   PrintMedium             …Core.V1.AlternateKeys (out of line, Record)
+###   Container/Copies        …Core.V1.OptimisticConcurrency (PropertyPath Condition)
+###   Container/Media         …Capabilities.V1.SearchRestrictions (Record)
+### The EnumMember shape is this server's doing; the model builder emits a Record
+### there, which the spec does not allow for an enum-typed term.
+###
+### 61 further annotations are this server's own addition and a deliberate
+### deviation from the reference EDMX - descriptions, units, currencies, value
+### constraints and the container's capabilities. They are in annotations.http,
+### together with the request that verifies each one.
 GET {{host}}/$metadata
 
 ### 404 - unknown entity set

@@ -103,16 +103,17 @@ executable counterpart to FEATURE-COVERAGE.md and run in any `.http` client. See
 
 ## Layout
 
-| Path                                  | Contents                                                              |
-| ------------------------------------- | --------------------------------------------------------------------- |
-| `src/LibraryService/Model/`           | The CLR types, one file per schema of the reference model              |
-| `src/LibraryService/EdmModelBuilder.cs` | The EDM model, built explicitly wherever a convention would not do   |
-| `src/LibraryService/Data/`            | The `DbContext`, the two value converters, and how the database is brought up |
-| `src/LibraryService/Controllers/`     | Entity sets and singleton; all functions and actions                   |
-| `src/LibraryService/Query/`           | `$search` binder - without it the option is silently ignored - and the replacement filter binder |
-| `db/`                                 | The schema (generated from the EF model) and the seed with its fixed keys, as SQL |
-| `docker-entrypoint.sh`                | Starts Postgres, applies `db/*.sql`, then the service - in that order  |
-| `test/`                               | The `.http` request collection, one file per category                  |
+| Path                                     | Contents                                                              |
+|------------------------------------------| --------------------------------------------------------------------- |
+| `src/LibraryService/Model/`              | The CLR types, one file per schema of the reference model              |
+| `src/LibraryService/EdmModelBuilder.cs`  | The EDM model, built explicitly wherever a convention would not do   |
+| `src/LibraryService/Annotations/`        | OASIS vocabulary annotations: one attribute per term, and the emitter that gives each the shape its term declares |
+| `src/LibraryService/Data/`               | The `DbContext`, the two value converters, and how the database is brought up |
+| `src/LibraryService/Controllers/`        | Entity sets and singleton; all functions and actions                   |
+| `src/LibraryService/Query/`              | `$search` binder - without it the option is silently ignored - and the replacement filter binder |
+| `db/`                                    | The schema (generated from the EF model) and the seed with its fixed keys, as SQL |
+| `docker-entrypoint.sh`                   | Starts Postgres, applies `db/*.sql`, then the service - in that order  |
+| `test/`                                  | The `.http` request collection, one file per category                  |
 
 Streams (`$value`, the `Sample` stream property, contained chapters) and `$ref` live in
 `Controllers/StreamControllers.cs` and `Controllers/RefControllers.cs`.
@@ -129,6 +130,16 @@ Notes worth knowing before editing:
   runs, and is never used.
 - Binding parameters are renamed to the reference model's names, because `EntitySetPath` refers to them
   by name.
+- **Vocabulary annotations are declared, not configured**: `[Core.Computed]`, `[Measures.Unit("kg")]` on
+  the model class, `.Annotate(…)` where a set, a singleton or an operation is built. The term's declared
+  type - read from the OASIS vocabulary itself - decides the shape, so an enum-typed term comes out as
+  `EnumMember` and not as the record the model builder would produce. An unknown term, a wrong target or
+  the same term twice stops the service at startup rather than emitting a wrong `$metadata`.
+- **What EF Core already states is not stated again.** Concurrency tokens, `HasPrecision`, cascading
+  deletes and column comments are read out of the EF model and become `Core.OptimisticConcurrency`, the
+  `Precision`/`Scale` facets, `OnDelete` and `Core.Description`. It runs from
+  `ODataConventionModelBuilder.OnModelCreating`, because before that the convention builder has not
+  discovered the properties yet and configuring them silently does nothing.
 - The **schema and the seed are SQL** under `db/`, applied by Postgres before the service starts - there is
   no seeding code. `db/01-schema.sql` is *generated* from the EF model, so regenerate it after changing the
   model: `dotnet run --project src/LibraryService -- --emit-schema ../../db/01-schema.sql`.

@@ -18,6 +18,7 @@ listens on `4004`.
 | File                                       | Contents                                                                     |
 | ------------------------------------------ | ---------------------------------------------------------------------------- |
 | [`service.http`](service.http)             | Service document and `$metadata`                                              |
+| [`annotations.http`](annotations.http)     | Vocabulary annotations: the shapes in `$metadata`, what is derived from the EF model, and the request behind every capability and constraint claimed |
 | [`read.http`](read.http)                   | Entity sets, keys, type casts, alternate key, navigation, containment         |
 | [`query-options.http`](query-options.http) | `$filter`, `$orderby`, `$select`, `$expand`, `$search`, `$apply`, `$compute`, `POST …/$query` |
 | [`crud.http`](crud.http)                   | Create, update, delete, deep insert, delta payloads, `@odata.bind`, cascades  |
@@ -27,6 +28,7 @@ listens on `4004`.
 | [`batch.http`](batch.http)                 | `$batch` (JSON)                                                               |
 | [`limitations.http`](limitations.http)     | The requests that do **not** answer as the spec suggests, by cause            |
 
-`read.http`, `query-options.http` and `service.http` are read-only. The rest change the store and assume
+`read.http`, `query-options.http` and `service.http` are read-only; `annotations.http` is too apart from
+its closing cascade section. The rest change the store and assume
 the freshly seeded state, so run them top to bottom and restart the service for a clean slate - the
 database is held in memory, so a restart is a reset.

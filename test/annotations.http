@@ -1,0 +1,210 @@
+###############################################################################
+# "Library" OData V4 test model - vocabulary annotations
+#
+# Start the server first:  dotnet run --project src/LibraryService
+# Every request carries the result actually observed against .NET 10.0 with
+# Microsoft.AspNetCore.OData 9.5.0. Read-only except for the cascade section,
+# which deletes - run this file top to bottom and restart for a clean slate.
+#
+# Annotations live in $metadata, so most of this file is one request - the one
+# below - and the shapes it has to contain. What it *does* exercise as requests
+# is the second half: every capability term the container states is claimed
+# because the request under it behaves that way, and every constraint term is
+# claimed because the seeded data satisfies it. A term nobody checked does not
+# belong in the metadata.
+#
+# The annotations of the reference model itself are listed in service.http;
+# everything here is this server's own addition, and a deliberate deviation
+# from the reference EDMX - see ../FEATURE-COVERAGE.md.
+###############################################################################
+
+@host = http://localhost:5091/odata/v4/library
+@book = 11111111-1111-1111-1111-111111111111
+@audiobook = 22222222-2222-2222-2222-222222222222
+@ebook = 33333333-3333-3333-3333-333333333333
+@collectorsItem = 77777777-7777-7777-7777-777777777777
+
+###############################################################################
+# The document
+###############################################################################
+
+### 200 - 69 annotations over 24 terms of 4 vocabularies. Every one of the value
+### shapes CSDL knows for a constant appears, and each is the shape the term's
+### declared type calls for - which is what the emitter is for:
+###
+###   Bool         Core.Computed, Core.Immutable, Core.AdditionalProperties
+###   String       Core.Description, Measures.Unit, Validation.Pattern
+###   Int          Validation.MaxItems, Measures.Scale, Validation.Minimum (Edm.Byte)
+###   Float        Validation.Minimum/Maximum on Medium/PopularityScore (Edm.Double)
+###   EnumMember   Core.Permissions
+###   Collection   Core.AcceptableMediaTypes, Capabilities.SupportedFormats
+###   PropertyPath Core.OptimisticConcurrency
+###   Record       Core.AlternateKeys, Capabilities.SearchRestrictions
+###
+### Note the two Validation.Minimum shapes: the term is typed Edm.PrimitiveType,
+### so the *value* decides - Int="1" on Book/PageCount, Float="0" on
+### Medium/PopularityScore. Targets covered: entity type, complex type property,
+### enum type, enum member, entity set, singleton, container, function, action
+### and operation parameter.
+GET {{host}}/$metadata
+
+###############################################################################
+# Capability terms on the container - each one is what the request shows
+###############################################################################
+
+### 200 - Capabilities.BatchSupported="true"
+### (the payload variants are in batch.http; this only shows $batch answers)
+POST {{host}}/$batch
+Content-Type: application/json
+
+{ "requests": [ { "id": "1", "method": "get", "url": "Media?$top=1" } ] }
+
+### 200 - Capabilities.KeyAsSegmentSupported="true". The key as its own segment
+### resolves to the same entity as the parenthesised form.
+GET {{host}}/Members/1
+
+### 200 - the parenthesised form, for comparison: identical body
+GET {{host}}/Members(1)
+
+### 200 - Capabilities.QuerySegmentSupported="true". Query options in the body
+### of a POST, which is what the term is about.
+POST {{host}}/Media/$query
+Content-Type: text/plain
+
+$top=1&$select=Title
+
+### 200 - Capabilities.AsynchronousRequestsSupported="false". The preference is
+### *ignored*, not honoured: the answer is the ordinary 200 with no
+### Preference-Applied header and no 202/Location. Stating false is therefore
+### the truthful annotation.
+GET {{host}}/Media?$top=1
+Prefer: respond-async
+
+### 404 - Capabilities.CrossJoinSupported="false". $crossjoin is not routed at
+### all, so the term says so rather than leaving the client to find out.
+GET {{host}}/$crossjoin(Media,Copies)
+
+### 200 - Capabilities.SupportedFormats="application/json": the only format the
+### service answers in, and the one every response above carries.
+GET {{host}}/Media?$top=1&$format=application/json
+
+###############################################################################
+# What is derived from the EF Core model rather than written
+#
+# Four facts are stated once, in LibraryContext, and translated into the EDM:
+#   .IsConcurrencyToken()  -> Core.OptimisticConcurrency, and @odata.etag
+#   HasPrecision(p, s)     -> the Precision / Scale facets
+#   DeleteBehavior.Cascade -> <OnDelete Action="Cascade"/>
+#   HasComment(...)        -> Core.Description
+# Copy/Condition is deliberately *not* [ConcurrencyCheck]: that attribute is
+# read by both stacks, so it would prove nothing. See ../IMPLEMENTATION.md.
+###############################################################################
+
+### 200 - every copy carries @odata.etag, computed from Condition. The EDM knows
+### Condition is the token only because it was translated out of the EF model.
+GET {{host}}/Copies
+
+### 200 - Core.Description="Shelf mark within the branch." on Copy/Location_
+### comes from the EF column comment, which is also COMMENT ON COLUMN
+### "Copies"."Location_" in db/01-schema.sql. One statement, two outputs.
+GET {{host}}/Copies?$select=Location_
+
+### 200 - Precision="9" Scale="2" on Member/Balance and Precision="5" Scale="2"
+### on Loan/LateFee are EF's HasPrecision, not a second declaration in
+### EdmModelBuilder. The facet and the numeric column cannot disagree.
+GET {{host}}/Members?$select=Balance
+
+### The four <OnDelete Action="Cascade"/> match what the database does. Each
+### pair below is: what is there, then what is left after the delete. They
+### change the store - run them last, and restart for a clean slate.
+
+### 200 - one loan and one reservation belong to member 1
+GET {{host}}/Loans?$select=Id
+
+### 204 - Member/Loans and Member/Reservations both cascade
+DELETE {{host}}/Members(1)
+
+### 200 - empty: the loan went with the member
+GET {{host}}/Loans?$select=Id
+
+### 200 - the DVD has one copy
+GET {{host}}/Copies?$filter=MediumId eq 66666666-6666-6666-6666-666666666666
+
+### 204 - Medium/Copies cascades
+DELETE {{host}}/Media(66666666-6666-6666-6666-666666666666)
+
+### 200 - empty: the copy went with the medium
+GET {{host}}/Copies?$filter=MediumId eq 66666666-6666-6666-6666-666666666666
+
+### 200 - the audiobook has two contained chapters
+GET {{host}}/Media({{audiobook}})/Library.Catalog.Audiobook/Chapters
+
+### 204 - Audiobook/Chapters cascades
+DELETE {{host}}/Media({{audiobook}})
+
+### 200 - and an empty collection, not a 404: the contained path still routes
+### once its parent is gone, which is the library's doing rather than the
+### cascade's. The parent itself answers 404.
+GET {{host}}/Media({{audiobook}})/Library.Catalog.Audiobook/Chapters
+
+### 404 - the audiobook
+GET {{host}}/Media({{audiobook}})
+
+###############################################################################
+# Core.AcceptableMediaTypes - the declared type is the type actually served
+###############################################################################
+
+### 200 - Content-Type: application/epub+zip, as EBook declares
+GET {{host}}/Media({{ebook}})/$value
+
+### 200 - Content-Type: audio/mpeg, as Audiobook/Sample declares
+GET {{host}}/Media({{audiobook}})/Library.Catalog.Audiobook/Sample
+
+### 200 - Content-Type: audio/mpeg, as AudiobookChapter declares
+GET {{host}}/Media({{audiobook}})/Library.Catalog.Audiobook/Chapters(1)/$value
+
+###############################################################################
+# Constraint terms - the seeded data satisfies every one of them
+#
+# None of them is *enforced*: they describe the model to a client reading
+# $metadata, and the runtime does not read them. That is the ⚠️ in
+# FEATURE-COVERAGE.md, and it is the same for Core.Computed and Core.Immutable.
+# What these requests show is that the claims are true of the data.
+###############################################################################
+
+### 200 - Validation.Pattern="^[0-9]{13}$" on PrintMedium/ISBN: 9783518188002,
+### 13 digits. Also Validation.Minimum=0 / Maximum=18 on Book/AgeRating (16)
+### and Validation.Minimum=1 on Book/PageCount (320).
+GET {{host}}/Media/Library.Catalog.Book?$select=ISBN,AgeRating,PageCount
+
+### 200 - the second ISBN in the seed, 9770000000001, likewise 13 digits. It
+### sits on the Magazine, which has no collection cast of its own, so the
+### alternate key is the way to it.
+GET {{host}}/Media/Library.Catalog.PrintMedium(ISBN='9770000000001')
+
+### 200 - Validation.Minimum=0 / Maximum=10 on Medium/PopularityScore:
+### 3.0, 4.5, 5.2, 7.4, 8.0, 9.1, 9.9
+GET {{host}}/Media?$orderby=PopularityScore&$select=PopularityScore
+
+### 200 - Validation.Minimum=0 / Maximum=5 on Copy/Condition: 1, 2, 3.
+### Measures.Unit="kg" with Measures.Scale=2 on Copy/WeightKg: 0.42, 0.41, 0.09.
+GET {{host}}/Copies?$select=Condition,WeightKg
+
+### 200 - Validation.MaxItems=20 on Medium/Keywords: 3 at most in the seed
+GET {{host}}/Media?$select=Keywords
+
+### 200 - Measures.DurationGranularity="minutes" on AudioMedium/Duration:
+### PT1H52M, a whole number of minutes with no seconds component
+GET {{host}}/Media/Library.Catalog.Audiobook?$select=Duration
+
+### 200 - the other AudioMedium, the DVD: PT2H33M, likewise whole minutes
+GET {{host}}/Media(66666666-6666-6666-6666-666666666666)
+
+### 200 - Measures.ISOCurrency="EUR" on Member/Balance: 12.50 and 0.00.
+### Core.Permissions=Read on the same property is not enforced - a PATCH
+### writing Balance is accepted, see limitations.http.
+GET {{host}}/Members?$select=Balance
+
+### 200 - Core.AdditionalProperties on CollectorsItem: the type is open, and
+### Appraisal and Insured are the undeclared properties it carries
+GET {{host}}/Media({{collectorsItem}})
