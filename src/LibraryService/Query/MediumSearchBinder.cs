@@ -20,7 +20,7 @@ public class MediumSearchBinder : QueryBinder, ISearchBinder
     /// The one-argument overload, deliberately: <c>Contains(string, StringComparison)</c> has no SQL
     /// translation, so once the store became a real database it would have turned every <c>$search</c>
     /// into a 500. Case-insensitivity is instead expressed by lowering both sides in
-    /// <see cref="MatchesTerm" />, which SQLite does translate.
+    /// <see cref="MatchesTerm" />, which does translate.
     /// </summary>
     private static readonly MethodInfo StringContains =
         typeof(string).GetMethod(nameof(string.Contains), [typeof(string)])!;

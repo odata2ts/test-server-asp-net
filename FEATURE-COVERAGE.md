@@ -6,7 +6,7 @@ where it cannot.
 
 Measured against **.NET 10.0.10** (the current LTS) with **Microsoft.AspNetCore.OData 9.5.0**
 (→ `Microsoft.OData.ModelBuilder` 2.0.0, `Microsoft.OData.Edm`/`Core` 8.4.0) and
-**Microsoft.EntityFrameworkCore.Sqlite 10.0.11**. Every statement below was verified against the emitted
+**Npgsql.EntityFrameworkCore.PostgreSQL 10.0.3** against **PostgreSQL 18**. Every statement below was verified against the emitted
 `$metadata` and against the running service - by diffing the metadata mechanically, not by reading it.
 Claims about what the *libraries* can or cannot do were checked against their actual API surface by
 reflection and against isolated probe models, not inferred from this service's behaviour. The requests
@@ -14,9 +14,17 @@ behind the tables are in [`test/`](test/).
 
 The reference model is a deliberately feature-dense probe of the OData spec, not a benchmark. A server does
 not have to implement all of OData. So the tables separate three causes: what **the library** cannot
-express, what **the persistence layer** costs (SQLite in memory, through EF Core), and what **this
+express, what **the persistence layer** costs (PostgreSQL, through EF Core), and what **this
 implementation** does not do. *How* the ticked features are built is in
 [IMPLEMENTATION.md](IMPLEMENTATION.md).
+
+The persistence layer costs very little now, and that is a recent change worth stating plainly: the store
+was SQLite in memory until 2026-08-15. SQLite has no type for a decimal, a timestamp or a duration, so all
+three were stored as scaled integers or tick counts, and the date-part functions over them either failed
+with a 500 or - in one case - answered wrongly without saying so. Postgres has `numeric`, `timestamptz`
+and `interval`, so those rows are not reworded below but gone, together with the three value converters
+that produced them. What the persistence layer still costs is the spatial types and the open type's
+dynamic properties, both of which have no relational form at all.
 
 ## Legend
 
@@ -36,11 +44,18 @@ The **protocol and operation surface is reproduced completely**: all 20 entity t
 including both overload pairs, which is the part most implementations lose. Every query option the
 reference model reaches translates to SQL.
 
-What is **not** covered comes down to five things, none of them this implementation's choice: two CSDL
-attributes the model builder has no API for (`TypeDefinition`, `Unicode`), the date-part functions over
-`Edm.DateTimeOffset`/`Edm.Duration` and the `geo.*` functions (both the storage layer's price), `$filter`
-and `$orderby` over an open type's dynamic properties (likewise), and the `If-Match` precondition, which no
-part of the stack enforces.
+What is **not** covered comes down to six things, five of them not this implementation's choice: two CSDL
+attributes the model builder has no API for (`TypeDefinition`, `Unicode`), the `geo.*` functions and
+`$filter`/`$orderby` over an open type's dynamic properties (both the storage layer's price), and the
+`If-Match` precondition, which no part of the stack enforces.
+
+The sixth is a choice, and the only place this server knowingly departs from the spec: **it accepts UTC
+timestamps only**. `Edm.DateTimeOffset` permits any offset, and a fully conformant server round-trips
+`+02:00` unchanged; this one answers **400** with a message naming the property and the UTC value to send
+instead. The reasoning is that UTC on the wire and UTC at rest is best practice - it is what the entire
+reference model already does - and that a deviation should be visible: normalising the value silently would
+hand the client back a timestamp it never sent, which is the worse outcome of the two. A client that
+already speaks UTC never meets this.
 
 ## Model and metadata
 
@@ -105,7 +120,7 @@ Every option below is translated to SQL by EF Core, not applied in memory.
 | `$filter` on complex properties, `any`/`all`, `Keywords/$count` | ✅ | ✔ |   |       |
 | `$filter` on enums (`eq`, flags `has`)              | ✅ | ✔ |   |       |
 | `$filter` with `null`                               | ✅ | ✔ |   | conformant over a query provider; over a `List<T>` the library applies three-valued logic, which OData does not specify for `ne` or a negated comparison |
-| `$filter` on `Edm.Date` / `Edm.TimeOfDay`           | ✅ |   | ✔ | the stock binder rebuilds both operands as a number - unindexable for dates, untranslatable for times (500); a replacement filter binder restates it as one comparison |
+| `$filter` on `Edm.Date` / `Edm.TimeOfDay`           | ✅ |   | ✔ | the stock binder rebuilds both operands as a number - correct but unindexable for dates, untranslatable for times (500); a replacement filter binder restates it as one comparison |
 | `$orderby`, incl. across a navigation property      | ✅ | ✔ |   |       |
 | `$top`, `$skip`, `$count`                           | ✅ | ✔ |   |       |
 | `$select`, `$expand`, nested `$expand` options      | ✅ | ✔ |   |       |
@@ -113,9 +128,11 @@ Every option below is translated to SQL by EF Core, not applied in memory.
 | `$apply` (`groupby`, `aggregate`)                   | ✅ | ✔ |   |       |
 | `$search`                                           | ✅ |   | ✔ | without an `ISearchBinder` it is accepted and **silently ignored**; the binder only takes effect in the per-route container |
 | `$id`, alternate key in `$filter`                   | ✅ | ✔ |   | needs `AlternateKeysODataUriResolver` in the per-route container |
-| Date-part functions over `Edm.DateTimeOffset` / `Edm.Duration` (`hour()`, `year()`, `now()`) | ❌ |   |   | stored as ticks, and no SQL pulls an hour back out of one - 500. `date()`, comparison and `$orderby` work; `Edm.Date` is unaffected |
+| Date-part functions over `Edm.DateTimeOffset` (`hour()`, `year()`, `month()`, `now()`, `date()`) | ✅ | ✔ |   | `timestamptz`, so every part is available to SQL. Was ❌ while the column was an integer tick count |
+| `$compute=date(...)` over `Edm.DateTimeOffset`      | ❌ |   |   | declares `Edm.Date` and returns the whole timestamp. The library's projection - the same function in `$filter` is correct |
+| Date-part functions over `Edm.Duration` (`totalseconds()`) | ❌ |   |   | the library declares no such function: 400 *Unknown function*, so the store is never asked |
 | `geo.*` functions                                   | ❌ |   |   | spatial values are stored as WKT; EF Core's spatial support is NetTopologySuite-only and does not speak `Microsoft.Spatial` at all |
-| `$filter` / `$orderby` on an open type's dynamic properties | ❌ |   |   | stored as JSON |
+| `$filter` / `$orderby` on an open type's dynamic properties | ❌ |   |   | stored as JSON - but the URI parser refuses an undeclared property with 400 before the store is ever asked |
 
 ## Vocabulary annotations
 
@@ -145,6 +162,20 @@ annotation holds a `Record` rather than one of the constant forms it evaluates. 
 tags, whose `Bool` the builder does put in the right place.
 
 ## Deviations from the reference EDMX
+
+### Behaviour
+
+One, and it is chosen rather than forced: **only UTC `Edm.DateTimeOffset` values are accepted**, in a
+request body and in a `$filter` literal alike. Anything with a non-zero offset is answered with 400 rather
+than converted. The spec permits any offset, so this is a real deviation; it is made deliberately, because
+UTC end to end is best practice and because refusing is honest where silently reinterpreting the client's
+value would not be. See the summary above and `test/limitations.http`.
+
+The timestamps themselves are stored as `timestamptz` at microsecond resolution, against the `Precision=7`
+(100 ns) the reference model declares - three decimal places finer than Postgres keeps. Nothing in the seed
+or in any payload observed reaches that resolution.
+
+### Metadata
 
 Two, both forced from below rather than chosen:
 

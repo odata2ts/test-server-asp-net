@@ -9,6 +9,12 @@
 # reference model would suggest. Each is separated by cause: the persistence
 # layer, the library, or this implementation. See ../FEATURE-COVERAGE.md for
 # the reasoning; this file only keeps the behaviour observable.
+#
+# The persistence layer has almost nothing left in here. It used to carry the
+# whole Edm.DateTimeOffset section - SQLite has no type for a timestamp, a
+# decimal or a duration, so all three were stored as integers and the date-part
+# functions over them either failed or answered wrongly. Postgres has all
+# three, and those requests now belong in query-options.http.
 ###############################################################################
 
 @host = http://localhost:5091/odata/v4/library
@@ -17,45 +23,47 @@
 @loan = 88888888-8888-8888-8888-888888888888
 
 ###############################################################################
-# The persistence layer: Edm.DateTimeOffset is stored as UTC ticks
+# This implementation: only UTC timestamps are accepted
 #
-# No SQL pulls an hour back out of an integer tick count. The alternative was
-# measured rather than assumed: with EF's default mapping every request below
-# fails, comparison and $orderby included.
+# A deliberate deviation. Edm.DateTimeOffset permits any offset and a fully
+# conformant server round-trips +02:00 unchanged; this one refuses it, because
+# UTC on the wire and at rest is the sane way to run a service and the whole
+# reference model is UTC already. It is refused rather than silently converted,
+# so that the client's value is never quietly reinterpreted.
 ###############################################################################
 
-### 500 - the LINQ expression l.LoanedAt.Hour == … has no translation
-GET {{host}}/Loans?$filter=hour(LoanedAt) eq 10
+### 400 - non-UTC offset in a write
+PATCH {{host}}/Members(2)
+Content-Type: application/json
 
-### 500 - same for year() over Edm.DateTimeOffset
-GET {{host}}/Loans?$filter=year(LoanedAt) eq 2026
+{ "ActiveSince": "2021-01-01T12:00:00+02:00" }
 
-### 500 - and for now()
-GET {{host}}/Loans?$filter=LoanedAt lt now()
+### 400 - and the same in a $filter literal, through the same guard
+GET {{host}}/Loans?$filter=LoanedAt gt 2020-01-01T00:00:00+02:00
 
-### 200 - but empty, and the loan IS on 2026-06-01: date() over the tick
-### storage answers an equality comparison wrongly rather than failing. The
-### only silent wrong answer in the service.
-GET {{host}}/Loans?$filter=date(LoanedAt) eq 2026-06-01
+### 204 - the same instant as UTC is accepted
+PATCH {{host}}/Members(2)
+Content-Type: application/json
 
-### 200 - the same seed loan, over ge/le, which do work
-GET {{host}}/Loans?$filter=date(LoanedAt) ge 2000-01-01
+{ "ActiveSince": "2021-01-01T10:00:00Z" }
 
-### 200 - $compute=date(...) returns the whole timestamp, not a date
+###############################################################################
+# The library: $compute=date(...) does not truncate
+#
+# The declared type is Edm.Date, but the whole timestamp comes back. In $filter
+# the same function is correct - see query-options.http, where eq, ne, ge and
+# le all answer as they should - so this is $compute's projection alone.
+###############################################################################
+
+### 200 - "D": "2026-06-01T10:00:00Z", where a date was declared
 GET {{host}}/Loans?$compute=date(LoanedAt) as D&$select=Id,D
-
-### 200 - Edm.Date is unaffected; it needs no value converter
-GET {{host}}/Media?$filter=year(PublicationDate) eq 1925
-
-### 200 - and comparison and $orderby over Edm.DateTimeOffset are fine
-GET {{host}}/Loans?$orderby=LoanedAt
 
 ###############################################################################
 # The persistence layer: the spatial types are stored as WKT text
 #
 # EF Core's spatial support is NetTopologySuite-only and would additionally
-# want the SpatiaLite native extension, so the type system OData speaks has no
-# EF provider at all. Deliberately out of scope - see CLAUDE.md.
+# want PostGIS, so the type system OData speaks - Microsoft.Spatial - has no EF
+# provider at all. Deliberately out of scope - see CLAUDE.md.
 ###############################################################################
 
 ### 400 - Unknown function 'geo.distance'. Not reached by the store at all:

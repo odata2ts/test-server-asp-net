@@ -5,9 +5,9 @@
 # Every request carries the result actually observed against .NET 10.0 with
 # Microsoft.AspNetCore.OData 9.5.0. Read-only.
 #
-# The store is SQLite through EF Core, so every option here is translated to
-# SQL rather than run over a List<T>. The ones that have no translation are in
-# limitations.http, not here.
+# The store is PostgreSQL through EF Core, so every option here is translated
+# to SQL rather than run over a List<T>. The ones that have no translation are
+# in limitations.http, not here.
 ###############################################################################
 
 @host = http://localhost:5091/odata/v4/library
@@ -52,18 +52,39 @@ GET {{host}}/Branches?$filter=startswith(Name,'Central')
 ### 200 - two predicates
 GET {{host}}/Media?$filter=PublicationDate gt 2000-01-01 and Language eq 'de'
 
-### 200 - Edm.Date compared as a value. Needs the replacement filter binder:
-### the stock one rebuilds both sides as year*10000+month*100+day.
+### 200 - Edm.Date compared as a value. Uses the replacement filter binder;
+### the stock one rebuilds both sides as year*10000+month*100+day, which is
+### correct but never touches the column on its own.
 GET {{host}}/Media?$filter=PublicationDate gt 2000-01-01
 
-### 200 - year()/month() over Edm.Date translate (no value converter involved)
+### 200 - year()/month() over Edm.Date translate
 GET {{host}}/Media?$filter=year(PublicationDate) eq 1925
 
-### 200 - Edm.TimeOfDay, same binder. Without it: no SQL at all, 500.
+### 200 - Edm.TimeOfDay, same binder. Without it: no SQL at all, 500 - the
+### only comparison that still depends on the replacement binder.
 GET {{host}}/Branches?$filter=OpensAt gt 09:30:00
 
-### 200 - Edm.DateTimeOffset compared as a value (stored as UTC ticks)
+### 200 - Edm.DateTimeOffset compared as a value, stored as timestamptz
 GET {{host}}/Loans?$filter=LoanedAt gt 2020-01-01T00:00:00Z
+
+### 200 - the date-part functions over Edm.DateTimeOffset all translate
+GET {{host}}/Loans?$filter=year(LoanedAt) eq 2026
+
+### 200 - including hour(), which needs the time of day out of the column
+GET {{host}}/Loans?$filter=hour(LoanedAt) eq 10
+
+### 200 - and now(), against the stored instant
+GET {{host}}/Loans?$filter=LoanedAt lt now()
+
+### 200 - one loan: date() answers equality correctly, ne/ge/le likewise.
+### Only $compute=date(...) still fails to truncate - see limitations.http.
+GET {{host}}/Loans?$filter=date(LoanedAt) eq 2026-06-01
+
+### 200 - Edm.Decimal compared and ordered as a number, stored as numeric(9,2)
+GET {{host}}/Members?$filter=Balance gt 10&$orderby=Balance desc
+
+### 200 - Edm.Duration compared as a value, stored as interval
+GET {{host}}/Media/Library.Catalog.Audiobook?$filter=Duration gt duration'PT1H'
 
 ### 200 - collection-valued primitive property
 GET {{host}}/Media?$filter=Keywords/$count gt 1

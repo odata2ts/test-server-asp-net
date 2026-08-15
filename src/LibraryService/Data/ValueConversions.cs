@@ -6,9 +6,17 @@ using Microsoft.Spatial;
 namespace LibraryService.Data;
 
 /// <summary>
-/// The three places where the reference model asks for something SQLite cannot hold directly. Each is a
-/// distortion, so each is written down here rather than spread over <see cref="LibraryContext" /> - and
-/// each is reported in FEATURE-COVERAGE.md under what the persistence layer costs.
+/// The two places where the reference model asks for something a relational column cannot hold directly.
+/// Each is a distortion, so each is written down here rather than spread over
+/// <see cref="LibraryContext" /> - and each is reported in FEATURE-COVERAGE.md under what the persistence
+/// layer costs.
+///
+/// It used to be five. <c>decimal</c>, <c>DateTimeOffset</c> and <c>TimeSpan</c> each needed a converter
+/// under SQLite, which has no type for any of them: the first was scaled to an integer, the other two were
+/// stored as ticks, all three because the text form SQLite falls back to compares lexically and made
+/// <c>$filter</c> and <c>$orderby</c> either wrong or untranslatable. Postgres has <c>numeric</c>,
+/// <c>timestamptz</c> and <c>interval</c>, so all three properties are now stored as themselves and the
+/// converters are gone rather than rewritten.
 /// </summary>
 public static class ValueConversions
 {
@@ -50,56 +58,35 @@ public static class ValueConversions
     }
 
     /// <summary>
-    /// <c>decimal</c> as an integer scaled by the declared <c>Scale</c>.
+    /// Rejects any <c>DateTimeOffset</c> that is not UTC, rather than quietly converting it.
     ///
-    /// SQLite has no decimal type. EF's default is to store one as TEXT, which compares and orders
-    /// lexically - so <c>$orderby Balance</c> and <c>$filter Balance gt 10</c> would return wrong results
-    /// rather than fail, the worst outcome for a server a test suite asserts against. Scaling to an
-    /// integer keeps the value exact and makes both work, and turns the <c>Precision</c>/<c>Scale</c>
-    /// facets already declared in <see cref="EdmModelBuilder" /> into this converter's contract.
+    /// This service speaks UTC: timestamps arrive as UTC, are stored as UTC and are returned as UTC. That
+    /// is a deliberate deviation - <c>Edm.DateTimeOffset</c> permits any offset and a fully conformant
+    /// server round-trips <c>+02:00</c> unchanged - and it is recorded as one in FEATURE-COVERAGE.md. It
+    /// is also what the whole reference model already does, and UTC on the wire and at rest is the sane
+    /// way to run a service.
     ///
-    /// EF applies the converter to query constants as well, which is what makes the comparison correct
-    /// and not merely storable.
+    /// A deviation is only defensible if it is visible, so a non-UTC value is refused with a 400 naming
+    /// the property. Normalising instead would be the worse deviation: the client's value would come back
+    /// changed with nothing to indicate that the server had decided to reinterpret it.
+    ///
+    /// A guard and not a conversion, so it sits in the same place a conversion would - the value passes
+    /// through untouched, which is what <c>timestamptz</c> stores anyway, to microsecond resolution.
     /// </summary>
-    public static ValueConverter<decimal, long> ScaledDecimal(int scale)
-    {
-        var factor = (decimal)Math.Pow(10, scale);
-
-        // One unit at the declared scale - 0.01m for scale 2 - reconstructed rather than written out, so
-        // the scale is taken from the argument and not from a literal.
-        //
-        // Multiplied, not divided, on the way back: `1250m / 100m` is 12.5m, because division normalises
-        // the scale away, while `1250m * 0.01m` is 12.50m - a decimal's scale is part of its value in .NET
-        // and survives multiplication. That is what keeps the payload showing the Scale=2 the reference
-        // model declares, instead of dropping the trailing zero.
-        var unit = new decimal(1, 0, 0, false, (byte)scale);
-
-        return new ValueConverter<decimal, long>(
-            value => (long)decimal.Round(value * factor, 0, MidpointRounding.AwayFromZero),
-            stored => stored * unit);
-    }
+    public static ValueConverter<DateTimeOffset, DateTimeOffset> UtcOnly() =>
+        new(value => RequireUtc(value), stored => stored);
 
     /// <summary>
-    /// <c>DateTimeOffset</c> as the tick count of the instant it names, in UTC.
+    /// Throws unless <paramref name="value" /> is UTC.
     ///
-    /// EF's SQLite provider stores one as text and then cannot translate a comparison against it at all:
-    /// <c>$filter LoanedAt gt 2020-01-01T00:00:00Z</c> and <c>$orderby LoanedAt</c> both failed to
-    /// translate. What made that dangerous rather than merely missing is *how* they failed - see
-    /// FEATURE-COVERAGE.md - so the fix is to store something SQLite can order: an integer.
-    ///
-    /// The cost is the offset. Only the instant survives, so a value written as <c>+02:00</c> reads back
-    /// as the same moment in UTC. Every timestamp in the reference model is UTC, so nothing in the seed
-    /// data changes shape.
+    /// Reached from both directions a client can supply a timestamp from - the body of a write and a
+    /// literal in <c>$filter</c> - because EF puts value converters in front of both, which is what makes
+    /// one guard enough to keep the two consistent.
     /// </summary>
-    public static ValueConverter<DateTimeOffset, long> UtcTicks() =>
-        new(value => value.UtcTicks, stored => new DateTimeOffset(stored, TimeSpan.Zero));
-
-    /// <summary>
-    /// <c>TimeSpan</c> as ticks, for the same reason: as text a duration compares lexically, and EF
-    /// refuses to translate the comparison rather than getting it wrong.
-    /// </summary>
-    public static ValueConverter<TimeSpan, long> DurationTicks() =>
-        new(value => value.Ticks, stored => TimeSpan.FromTicks(stored));
+    public static DateTimeOffset RequireUtc(DateTimeOffset value) =>
+        value.Offset == TimeSpan.Zero
+            ? value
+            : throw new UtcOnlyException(value);
 
     /// <summary>
     /// The open type's undeclared properties as a JSON object.

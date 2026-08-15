@@ -4,22 +4,37 @@ using LibraryService.Query;
 using Microsoft.AspNetCore.OData;
 using Microsoft.AspNetCore.OData.Batch;
 using Microsoft.AspNetCore.OData.Query.Expressions;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+
+// Regenerates db/01-schema.sql from the mapping in LibraryContext and exits. Run it after changing the
+// model - the schema is SQL the database applies on its own, but it is not written by hand, because then
+// it and the EF mapping would drift apart. No server is contacted; the script is produced from the model.
+if (args is ["--emit-schema", var schemaTarget, ..])
+{
+    await DatabaseInit.EmitSchemaAsync(schemaTarget);
+    return;
+}
 
 var builder = WebApplication.CreateBuilder(args);
 
-// SQLite in memory, shared by the whole process. The connection is opened here and never closed on
-// purpose: an in-memory database lives exactly as long as a connection to it is open, so letting EF open
-// and close one per request would throw the schema away between requests. One store for the whole
-// process, as before - the seed data is the contract consumers assert against.
-var connection = new SqliteConnection("Data Source=library;Mode=Memory;Cache=Shared");
-connection.Open();
-builder.Services.AddSingleton(connection);
+// Where the database is depends on how the service was started, and that is the only difference between
+// the two ways to run it:
+//
+//   - In the published image the entrypoint has already started a Postgres next to the service and put its
+//     connection string in the environment. See Dockerfile.
+//   - Locally there is nothing to configure and nothing to install: with no connection string the service
+//     starts its own Postgres container and waits for it.
+//
+// Both apply the identical db/*.sql, so both end up at the identical, well-known state.
+var connectionString = builder.Configuration.GetConnectionString("Library");
+await using var ownedDatabase = string.IsNullOrWhiteSpace(connectionString)
+    ? await DatabaseInit.StartOwnPostgresAsync()
+    : null;
+connectionString ??= ownedDatabase!.GetConnectionString();
 
 // Scoped, which is the point of the exercise: every request gets its own change tracker and its own unit
 // of work, and each sub-request of a $batch gets its own too.
-builder.Services.AddDbContext<LibraryContext>(options => options.UseSqlite(connection));
+builder.Services.AddDbContext<LibraryContext>(options => options.UseNpgsql(connectionString));
 
 builder.Services.AddControllers().AddOData(options =>
     options
@@ -45,12 +60,10 @@ builder.Services.AddControllers().AddOData(options =>
 
 var app = builder.Build();
 
-// Create the schema and fill it before the first request. Nothing is generated at runtime, so this is
-// the whole of the server's state - every process starts from the identical, well-known data.
-using (var scope = app.Services.CreateScope())
-{
-    LibrarySeed.Apply(scope.ServiceProvider.GetRequiredService<LibraryContext>());
-}
+// No schema creation and no seeding here on purpose: the database arrives populated. Both scripts under
+// db/ are applied by Postgres itself before it accepts its first connection, so by the time this process
+// can reach the database the well-known state is already there - and the service has no code path that
+// could write it a second time, or differently.
 
 // Buffer the body so navigation bindings can be read back after model binding consumed it - see
 // NavigationBinding for why they must not go through Delta.
@@ -85,17 +98,25 @@ app.Use(async (context, next) =>
     }
     catch (Exception exception)
     {
+        // A non-UTC timestamp is the client's doing, so it answers 400 - see UtcOnlyException. Everything
+        // else reaching this point is the server's, and stays a 500. EF wraps what a converter throws
+        // during SaveChanges, so the search has to go down the chain rather than look at the top only.
+        var utcOnly = Unwrap<UtcOnlyException>(exception);
+
         context.Response.Clear();
-        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        context.Response.StatusCode = utcOnly is null
+            ? StatusCodes.Status500InternalServerError
+            : StatusCodes.Status400BadRequest;
         context.Response.ContentType = "application/json";
 
+        var reported = utcOnly ?? exception;
         var payload = System.Text.Json.JsonSerializer.Serialize(
             new
             {
                 error = new
                 {
-                    code = exception.GetType().Name,
-                    message = exception.Message,
+                    code = reported.GetType().Name,
+                    message = reported.Message,
                 },
             });
 
@@ -117,6 +138,21 @@ app.UseRouting();
 app.MapControllers();
 
 app.Run();
+
+/// <summary>The first <typeparamref name="T" /> in an exception's chain, or null if there is none.</summary>
+static T? Unwrap<T>(Exception exception)
+    where T : Exception
+{
+    for (Exception? current = exception; current is not null; current = current.InnerException)
+    {
+        if (current is T match)
+        {
+            return match;
+        }
+    }
+
+    return null;
+}
 
 /// <summary>Exposed so integration tests can host the service in-process.</summary>
 public partial class Program;
