@@ -159,21 +159,31 @@ public class DateComparisonBinder : FilterBinder
             _ => null,
         };
 
+    /// <summary>
+    /// Restates an <c>Edm.Date</c> literal as a <see cref="DateOnly" />, and refuses anything else.
+    ///
+    /// Deliberately not <see cref="DateTime" /> or <see cref="DateTimeOffset" />, even though both can hold
+    /// a date: the other operand then is not a date property but a *timestamp*, which is what
+    /// <c>$filter=date(LoanedAt) eq 2026-06-01</c> produces - the library's <c>date()</c> does not truncate,
+    /// it hands the whole timestamp through (visible in <c>$compute=date(LoanedAt)</c>, which returns
+    /// <c>2026-06-01T10:00:00Z</c>). Converting the literal here compared 10:00 against midnight and
+    /// answered "no match" for a loan that is plainly on that date - a wrong answer rather than an error.
+    ///
+    /// Returning null instead leaves that comparison to the base implementation, whose part-by-part
+    /// arithmetic is roundabout but correct. This binder takes over only what it can state more directly.
+    /// </summary>
     private static Expression? Constant(Date date, Type targetType) =>
-        (Nullable.GetUnderlyingType(targetType) ?? targetType) switch
-        {
-            var t when t == typeof(DateOnly) => Expression.Constant((DateOnly)date, targetType),
-            var t when t == typeof(DateTime) => Expression.Constant((DateTime)date, targetType),
-            var t when t == typeof(DateTimeOffset) =>
-                Expression.Constant(new DateTimeOffset((DateTime)date, TimeSpan.Zero), targetType),
-            _ => null,
-        };
+        (Nullable.GetUnderlyingType(targetType) ?? targetType) == typeof(DateOnly)
+            ? Expression.Constant((DateOnly)date, targetType)
+            : null;
 
+    /// <summary>
+    /// The same for <c>Edm.TimeOfDay</c>: only a genuine <see cref="TimeOnly" /> property. A
+    /// <see cref="TimeSpan" /> is <c>Edm.Duration</c> in this model, and <c>time()</c> over a timestamp has
+    /// the truncation problem its date counterpart has.
+    /// </summary>
     private static Expression? Constant(TimeOfDay time, Type targetType) =>
-        (Nullable.GetUnderlyingType(targetType) ?? targetType) switch
-        {
-            var t when t == typeof(TimeOnly) => Expression.Constant((TimeOnly)time, targetType),
-            var t when t == typeof(TimeSpan) => Expression.Constant((TimeSpan)time, targetType),
-            _ => null,
-        };
+        (Nullable.GetUnderlyingType(targetType) ?? targetType) == typeof(TimeOnly)
+            ? Expression.Constant((TimeOnly)time, targetType)
+            : null;
 }

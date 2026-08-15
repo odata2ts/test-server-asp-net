@@ -33,14 +33,6 @@ GET {{host}}/Loans?$filter=year(LoanedAt) eq 2026
 ### 500 - and for now()
 GET {{host}}/Loans?$filter=LoanedAt lt now()
 
-### 200 - but empty, and the loan IS on 2026-06-01: date() over the tick
-### storage answers an equality comparison wrongly rather than failing. The
-### only silent wrong answer in the service.
-GET {{host}}/Loans?$filter=date(LoanedAt) eq 2026-06-01
-
-### 200 - the same seed loan, over ge/le, which do work
-GET {{host}}/Loans?$filter=date(LoanedAt) ge 2000-01-01
-
 ### 200 - $compute=date(...) returns the whole timestamp, not a date
 GET {{host}}/Loans?$compute=date(LoanedAt) as D&$select=Id,D
 

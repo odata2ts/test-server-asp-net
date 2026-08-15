@@ -65,6 +65,11 @@ GET {{host}}/Branches?$filter=OpensAt gt 09:30:00
 ### 200 - Edm.DateTimeOffset compared as a value (stored as UTC ticks)
 GET {{host}}/Loans?$filter=LoanedAt gt 2020-01-01T00:00:00Z
 
+### 200 - one loan: date() answers equality correctly. The replacement binder
+### stays out of it, because date() yields a timestamp rather than a date -
+### converting the literal to match compared 10:00 against midnight.
+GET {{host}}/Loans?$filter=date(LoanedAt) eq 2026-06-01
+
 ### 200 - collection-valued primitive property
 GET {{host}}/Media?$filter=Keywords/$count gt 1
 

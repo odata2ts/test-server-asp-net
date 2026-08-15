@@ -230,6 +230,22 @@ boundaries were checked against the in-memory build, which is the reference for 
 The binder stands down when null propagation is on - a LINQ-to-Objects source - where the base
 implementation's three-valued `bool?` is what the surrounding expression expects.
 
+**It also has to stand down when the operand is not really a date.** This is the trap, and it produced a
+wrong answer rather than an error:
+
+```
+$filter=date(LoanedAt) eq 2026-06-01   ->   no match, for a loan that is plainly on that date
+```
+
+The library's `date()` does not truncate - it hands the whole timestamp through, which
+`$compute=date(LoanedAt) as D` makes visible by returning `2026-06-01T10:00:00Z`. The other operand is
+therefore a `DateTimeOffset`, not a `DateOnly`, and the binder used to convert the `Edm.Date` literal to
+match it - producing midnight, and comparing 10:00 against 00:00.
+
+So `Constant` accepts **only** `DateOnly` for `Edm.Date` and `TimeOnly` for `Edm.TimeOfDay`, and returns
+null for anything else, which hands the comparison back to the base implementation - whose part-by-part
+arithmetic is roundabout but correct. The binder takes over only what it can state more directly.
+
 ## Controllers
 
 ### Creating a copy: the hand-written parser
