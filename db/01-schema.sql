@@ -147,6 +147,7 @@ CREATE TABLE "Copies" (
     CONSTRAINT "FK_Copies_Branches_LocationId" FOREIGN KEY ("LocationId") REFERENCES "Branches" ("Id") ON DELETE SET NULL,
     CONSTRAINT "FK_Copies_Media_MediumId" FOREIGN KEY ("MediumId") REFERENCES "Media" ("Id") ON DELETE CASCADE
 );
+COMMENT ON COLUMN "Copies"."Location_" IS 'Shelf mark within the branch.';
 
 
 CREATE TABLE "Loans" (

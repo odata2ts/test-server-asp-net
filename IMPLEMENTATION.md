@@ -51,6 +51,152 @@ and its extra parameter stays unbound. One action serves both overloads and read
 `AvailableCopies`, bound once to a single `Medium` and once to a `Collection(Medium)`, needs nothing
 special.
 
+### Vocabulary annotations are declared, not configured
+
+Annotations are written where the thing they describe is declared, and translated centrally:
+
+```csharp
+[Core.Computed]                     public double? PopularityScore { get; set; }
+[Core.Permissions(Core.Permission.Read)] public decimal Balance { get; set; }
+[Measures.Unit("kg")]               public float WeightKg { get; set; }
+```
+
+`src/LibraryService/Annotations/` holds one static class per OASIS vocabulary - `Core`, `Measures`,
+`Validation`, `Capabilities`, `Community` - with one attribute per term, plus a generic
+`[Annotation("Org.OData.Core.V1.LongDescription", "…")]` for everything without one. Covered are the terms
+whose value is a **primitive, an enum, a tag or a collection of primitives**; a record-valued term
+(`Capabilities.InsertRestrictions`, `Core.Revisions`, …) has no attribute, because C# attribute arguments
+cannot carry an object graph.
+
+**The attributes know nothing about CSDL.** Each carries a term name, a raw CLR value and an optional
+qualifier; `AnnotationEmitter` resolves the term against the vocabulary that
+`Microsoft.OData.Edm` itself ships as an `IEdmModel` (`CoreVocabularyModel.Instance` and its siblings),
+reads its **declared type**, and builds the expression that type demands - `Bool` for a tag, `EnumMember`
+for an enum, `PropertyPath` for a path, `Collection` of those for a collection. That single type-directed
+step is the whole point; see the `Core.Permissions` trap below.
+
+Three things are refused, and refusing means the service does not start - a silently dropped or wrongly
+shaped annotation would be a wrong `$metadata`, which is what this repo exists to report on:
+
+| Refused | Message |
+| --- | --- |
+| unknown term | `Unknown vocabulary term 'Org.OData.Core.V1.NoSuchTerm' on 'Library.Catalog.PrintMedium/ISBN'` |
+| wrong target | `… cannot be applied to 'Library.Catalog.PrintMedium/ISBN': the vocabulary declares AppliesTo="Collection", the target is Property` |
+| same term twice | `… is applied to … more than once with the same qualifier` |
+
+The target check reads `AppliesTo` off the term itself, so the rule is the vocabulary's, never a list
+maintained here.
+
+### The model builder wraps every term value in a record
+
+`VocabularyTermConfiguration` - what `HasPermissions()`, `HasComputed()`, `HasImmutable()` and the rest
+build - emits a `Record` whatever the term's type is. For the tags that is invisible, because a record with
+one boolean property happens to be what those terms declare. For `Core.Permissions` it is wrong: the term
+is typed `Core.Permission`, an enum, so the value belongs on the annotation itself. The builder produced
+
+```xml
+<Annotation Term="Org.OData.Core.V1.Permissions">
+  <Record><PropertyValue Property="Permissions" .../></Record>
+</Annotation>
+```
+
+which is not valid CSDL: the value expression of an annotation has to match the term's declared type, and
+a `Record` expression is only allowed where that type is a structured type. Emitting the annotation
+directly gives the shape the term declares:
+
+```xml
+<Annotation Term="Org.OData.Core.V1.Permissions">
+  <EnumMember>Org.OData.Core.V1.Permission/Read</EnumMember>
+</Annotation>
+```
+
+The spec states an `EnumMember` constant either as an attribute on `edm:Annotation` (`EnumMember="…"`) or
+as an `edm:EnumMember` child element. They are the same expression and a client has to read both;
+`Microsoft.OData.Edm`'s XML writer chooses the element form, and that is what comes out here.
+
+`Core.AlternateKeys` and `Capabilities.SearchRestrictions` are still built by the model builder, not by
+this mechanism: both are record-valued, and `HasAlternateKeys` additionally feeds routing (next section).
+Whether either should move is **open** - `AlternateKeys` only if the emitted annotation still satisfies
+`GetDeclaredAlternateKeysForType`, which is the whole reason the alias is set. Which record-valued terms
+are worth an attribute at all is open too, and is a question per term rather than one decision.
+
+### Entity sets have no CLR declaration - and the generic configuration hides itself
+
+An entity set, a singleton, an operation and its parameters are built by name, so there is nothing to put
+an attribute on. They are annotated fluently instead, with the same attribute objects:
+
+```csharp
+builder.AnnotatableEntitySet<Copy>("Copies").Annotate(new Capabilities.TopSupported(false));
+builder.AnnotateContainer(new Capabilities.ConformanceLevel(Capabilities.ConformanceLevelType.Advanced));
+search.Parameter<int>("MaxResults").Annotate(new Validation.Maximum(100));
+```
+
+`AnnotatableEntitySet` exists because of a library trap. `builder.EntitySet<T>(name)` returns the *generic*
+`EntitySetConfiguration<T>`, a wrapper whose `Configuration` property - the real, non-generic configuration
+the builder keeps in `builder.EntitySets` - is **internal**. An annotation parked against the wrapper could
+never be matched back to the entity set afterwards. `AddEntitySet(name, AddEntityType(typeof(T)))` is the
+same declaration one level down, is public, is idempotent, and returns the configuration itself.
+
+Operations are matched back to the built model by fully qualified name **and parameter names**: the
+reference model has two overload pairs (`Search`, `AvailableCopies`), for which the name alone is
+ambiguous.
+
+### What EF Core already knows is not stated twice
+
+EF Core and OData describe overlapping things. Where both have a word for the same fact, the persistence
+model is the source and the EDM follows - `EfCoreTranslation` reads the EF model and configures the OData
+builder from it. Four facts are carried over:
+
+| EF Core | OData | Where it shows |
+| --- | --- | --- |
+| `.IsConcurrencyToken()` | `Core.OptimisticConcurrency` + `@odata.etag` | `Copy/Condition` |
+| `HasPrecision(p, s)` | `Precision` / `Scale` facets | `Member/Balance` (9,2), `Loan/LateFee` (5,2) |
+| `DeleteBehavior.Cascade` | `<OnDelete Action="Cascade"/>` | `Member/Loans`, `Member/Reservations`, `Medium/Copies`, `Audiobook/Chapters` |
+| `HasComment(…)` | `Core.Description` | `Copy/Location_` |
+
+**Some of it was already in agreement, by accident rather than design.** `[MaxLength]`, `[Required]`,
+`[Key]`, `[NotMapped]`, `[Column]`, `[DefaultValue]` and `[ConcurrencyCheck]` are
+`System.ComponentModel.DataAnnotations` attributes that *both* stacks read - the OData side through
+`MaxLengthAttributeEdmPropertyConvention`, `ConcurrencyCheckAttributeEdmPropertyConvention` and friends. The
+agreement ends the moment a model configures the same thing fluently, which is how most EF models are
+written. `Copy/Condition` is deliberately declared with EF's fluent `IsConcurrencyToken()` and *not* with
+`[ConcurrencyCheck]`, so that the annotation and the ETag exist only because they were translated.
+
+**Three traps, in order of how much they cost.**
+
+*The model has to be read at the right moment.* `ODataConventionModelBuilder` discovers properties and
+navigations while building, so a translation that runs before `GetEdmModel()` sees a configuration with
+almost nothing in it - only what was configured by hand - and quietly does nothing. Running it after is
+too late: `Precision` and `IsConcurrencyToken` are builder concepts and no longer settable. The hook is
+`builder.OnModelCreating`, which fires after the conventions and before the configuration is locked down.
+The first version of this ran too early and produced a model with the precision facets, the concurrency
+annotation and the comment all silently missing.
+
+*Relational metadata is not in the runtime model.* `DbContext.Model` is read-optimized and throws
+`"the requested configuration is not stored in the read-optimized model"` for a comment or a precision. It
+takes `GetService<IDesignTimeModel>().Model` - see `DatabaseInit.MappingModel`, which builds it from a
+context with a dummy connection string and never opens a connection, exactly as the schema generator does.
+
+*Delete behaviour belongs to the foreign key, `OnDelete` to one navigation.* Both navigations of a foreign
+key report its `DeleteBehavior`, while `<OnDelete>` on a navigation property means "deleting the entity
+that declares this navigation deletes what it points at". Applied to the dependent's reference back to its
+principal, it says that deleting a `Copy` deletes the `Medium`. Only the principal side may carry it -
+`INavigation.IsOnDependent` is the test, and without it the model gained two cascades that claimed the
+opposite of what the database does.
+
+**What is deliberately *not* translated matters as much.** Each of these looks like a pendant and would
+put a false statement into `$metadata`:
+
+| EF Core | Why not |
+| --- | --- |
+| `ValueGenerated.OnAdd` | EF's convention for client-generated `Guid` keys - it is on `Medium/Id`, `Loan/Id`, `IdDocument/Id` and `Reservation/Id`, every one of which is assigned by the seed or a controller. `Core.ComputedDefaultValue` would be untrue |
+| `ValueGenerated.OnUpdateSometimes` | a table-per-hierarchy artefact for a property not mapped on every subtype (`DVD/Duration`). Nothing to do with `Core.Computed` |
+| `GetDefaultValue()` | the design-time model reports the *CLR type default* for every non-nullable property - including `false` for `Copy/IsLoanable`, whose declared default is `true` |
+| unique index | the only one is the 1:1 foreign key `Member/IdDocumentId`; reading unique indexes as `Core.AlternateKeys` would invent an alternate key |
+| `DeleteBehavior.SetNull` | used five times here, and CSDL has the action - but `NavigationPropertyConfiguration` exposes only `CascadeOnDelete()` |
+| `IsUnicode(false)` | no vocabulary term, no builder API, and nothing to read it from either - see the `Unicode` row in FEATURE-COVERAGE.md |
+| owned types, `ToJson()`, `HasDiscriminator`, `PrimitiveCollection` | storage shape; the EDM expresses the same structure independently |
+
 ### `Core.AlternateKeys` - three things have to line up
 
 `HasAlternateKeys` sits on `EntityTypeConfiguration<T>` as well as on `EntitySetConfiguration<T>`, and

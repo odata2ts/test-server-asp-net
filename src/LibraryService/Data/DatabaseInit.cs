@@ -1,4 +1,6 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Testcontainers.PostgreSql;
 
 namespace LibraryService.Data;
@@ -56,6 +58,25 @@ public static class DatabaseInit
         var container = builder.Build();
         await container.StartAsync();
         return container;
+    }
+
+    /// <summary>
+    /// The EF model, without a database behind it - the mapping alone.
+    ///
+    /// The *design-time* model, not <c>DbContext.Model</c>: comments, precision and the rest of the
+    /// relational configuration are stripped from the read-optimized runtime model, which answers
+    /// "the requested configuration is not stored in the read-optimized model" if asked for them.
+    ///
+    /// Used by <see cref="Annotations.EfCoreTranslation" /> while the EDM is built, which is before any
+    /// <c>DbContext</c> exists and before a connection string is known. No connection is opened, exactly
+    /// as in <see cref="EmitSchemaAsync" />; the provider only has to be Npgsql.
+    /// </summary>
+    public static IModel MappingModel()
+    {
+        var options = new DbContextOptionsBuilder<LibraryContext>().UseNpgsql("Host=model-only").Options;
+        using var context = new LibraryContext(options);
+
+        return context.GetService<IDesignTimeModel>().Model;
     }
 
     /// <summary>

@@ -1,9 +1,10 @@
 using Library.Catalog;
 using Library.Circulation;
+using LibraryService.Annotations;
+using LibraryService.Data;
 using Microsoft.OData.Edm;
 using Microsoft.OData.Edm.Vocabularies;
 using Microsoft.OData.ModelBuilder;
-using Microsoft.OData.ModelBuilder.Core.V1;
 
 namespace LibraryService;
 
@@ -15,6 +16,12 @@ namespace LibraryService;
 /// something a convention would not produce - namespaces, the container name, the namespace of every
 /// operation, composite keys, containment. Whatever cannot be expressed at all is recorded in
 /// FEATURE-COVERAGE.md, never quietly dropped.
+///
+/// Vocabulary annotations are *not* configured here where they belong to a type or a property: those are
+/// declared as attributes on the model classes and emitted by <see cref="AnnotationEmitter" />. What stays
+/// here is what has no CLR declaration - entity sets, singletons, operations, parameters, the container -
+/// written with <see cref="AnnotationExtensions.Annotate{T}" />, plus the two terms the builder still
+/// produces itself. See IMPLEMENTATION.md.
 /// </summary>
 public static class EdmModelBuilder
 {
@@ -28,13 +35,20 @@ public static class EdmModelBuilder
         // namespaces are put back afterwards, see AlignNamespacesWithClrTypes.
         var builder = new ODataConventionModelBuilder { Namespace = "Library.Service", ContainerName = "LibraryService" };
 
+        // What EF Core and OData both have a word for is carried over from the persistence model rather
+        // than repeated here. It has to run from this hook and not inline below: the convention builder
+        // discovers the properties and navigations while building, so before that there is nothing to
+        // configure - which is exactly the trap, because configuring nothing throws nothing.
+        builder.OnModelCreating = configured => EfCoreTranslation.Apply(configured, DatabaseInit.MappingModel());
+
         ConfigureTypes(builder);
         ConfigureEntitySets(builder);
         ConfigureUnboundOperations(builder);
         ConfigureBoundOperations(builder);
         AlignNamespacesWithClrTypes(builder);
 
-        return builder.GetEdmModel();
+        // Not GetEdmModel(): that returns the model without any of the declared vocabulary annotations.
+        return builder.GetAnnotatedEdmModel();
     }
 
     /// <summary>
@@ -70,7 +84,6 @@ public static class EdmModelBuilder
         var medium = builder.EntityType<Medium>();
         medium.Abstract();
         medium.HasKey(m => m.Id);
-        medium.Property(m => m.PopularityScore).HasComputed().IsComputed(true);
 
         // Core.AlternateKeys goes on the entity *type*, not on the entity set: that is where the
         // reference model puts it, and where routing looks it up (GetDeclaredAlternateKeysForType).
@@ -117,32 +130,30 @@ public static class EdmModelBuilder
         builder.ComplexType<AnnualReport>().Property(a => a.TotalLateFees).Precision = 12;
         builder.ComplexType<AnnualReport>().Property(a => a.TotalLateFees).Scale = 2;
 
+        // Member/Balance and Loan/LateFee are deliberately absent: EF declares their precision with
+        // HasPrecision, and EfCoreTranslation carries it over. Stating it twice is how the column and the
+        // facet drift apart. The timestamps below have no EF counterpart - Postgres keeps microseconds
+        // whatever the model says - so they stay here.
         var member = builder.EntityType<Member>();
         member.Property(m => m.ActiveSince).Precision = 7;
-        member.Property(m => m.ActiveSince).HasComputedDefaultValue().IsComputedDefaultValue(true);
-        member.Property(m => m.Balance).Precision = 9;
-        member.Property(m => m.Balance).Scale = 2;
-        // Read alone: readable, never writable. The distinction against Computed is what it says about
-        // reading, which is nothing in the computed case.
-        member.Property(m => m.Balance).HasPermissions().HasPermissions(Permission.Read);
 
         var loan = builder.EntityType<Loan>();
         loan.Property(l => l.LoanedAt).Precision = 7;
-        loan.Property(l => l.LoanedAt).HasImmutable().IsImmutable(true);
         loan.Property(l => l.ReturnedAt).Precision = 7;
-        loan.Property(l => l.LateFee).Precision = 5;
-        loan.Property(l => l.LateFee).Scale = 2;
 
         builder.EntityType<Reservation>().Property(r => r.ReservedAt).Precision = 7;
         builder.EntityType<IdDocument>().Property(d => d.UploadedAt).Precision = 7;
         copy.Property(c => c.IsLoanable).DefaultValueString = "true";
 
-        // Delete behaviour and required navigation. `NavigationPropertyConfiguration.Partner` is
-        // read-only, and neither `HasMany` nor the convention builder relates the two sides - but the
-        // three-argument overloads of HasRequired/HasOptional do. The referential constraint in the
-        // middle may be null, which is what makes them usable here: unlike Copy/Medium, these
-        // associations have no foreign key property in the reference model.
-        member.HasMany(m => m.Loans).CascadeOnDelete();
+        // Required navigation. `NavigationPropertyConfiguration.Partner` is read-only, and neither
+        // `HasMany` nor the convention builder relates the two sides - but the three-argument overloads of
+        // HasRequired/HasOptional do. The referential constraint in the middle may be null, which is what
+        // makes them usable here: unlike Copy/Medium, these associations have no foreign key property in
+        // the reference model.
+        //
+        // Delete behaviour is *not* declared here: EF already states it, and EfCoreTranslation turns every
+        // DeleteBehavior.Cascade into the OnDelete the CSDL wants.
+        member.HasMany(m => m.Loans);
         loan.HasRequired(l => l.Member!, null, m => m.Loans);
         loan.HasRequired(l => l.Copy!);
 
@@ -167,6 +178,44 @@ public static class EdmModelBuilder
         builder.EntitySet<PublisherRegistry.Branch>("PublisherBranches");
 
         builder.Singleton<Branch>("MainBranch");
+
+        AnnotateContainerElements(builder);
+    }
+
+    /// <summary>
+    /// Descriptions and capabilities for the container and its elements. Separate from the declarations
+    /// above because the generic <c>EntitySet&lt;T&gt;()</c> returns a wrapper that cannot carry an
+    /// annotation - see IMPLEMENTATION.md; <c>AnnotatableEntitySet</c> finds the set just declared.
+    ///
+    /// Every capability stated here was checked with a request, and the requests are in
+    /// test/annotations.http. A capability term that is not verified does not belong in the metadata.
+    /// </summary>
+    private static void AnnotateContainerElements(ODataModelBuilder builder)
+    {
+        builder.AnnotateContainer(
+            new Core.Description("The odata2ts \"Library\" reference model, served by ASP.NET Core OData."),
+            new Capabilities.SupportedFormats("application/json"),
+            new Capabilities.BatchSupported(),
+            new Capabilities.KeyAsSegmentSupported(),
+            new Capabilities.QuerySegmentSupported(),
+            // Not supported, and stating so is the point: the preference is ignored rather than honoured,
+            // and $crossjoin answers 404.
+            new Capabilities.AsynchronousRequestsSupported(false),
+            new Capabilities.CrossJoinSupported(false));
+
+        builder.AnnotatableEntitySet<Medium>("Media")
+            .Annotate(new Core.Description("Everything the library holds, across all media types."));
+        builder.AnnotatableEntitySet<Copy>("Copies")
+            .Annotate(new Core.Description("The physical or licensed copies of a medium; what is borrowed."));
+        builder.AnnotatableEntitySet<Member>("Members")
+            .Annotate(new Core.Description("Registered members."));
+        builder.AnnotatableEntitySet<Loan>("Loans")
+            .Annotate(new Core.Description("Loans, open and returned alike."));
+        builder.AnnotatableEntitySet<Bookmobile>("Bookmobiles")
+            .Annotate(new Core.Description("Mobile branches, with their route and current position."));
+
+        builder.AnnotatableSingleton<Branch>("MainBranch")
+            .Annotate(new Core.Description("The central branch - the one that is always there."));
     }
 
     private static void ConfigureUnboundOperations(ODataConventionModelBuilder builder)
@@ -175,6 +224,7 @@ public static class EdmModelBuilder
         totalMediaCount.Namespace = OperationNamespace;
         totalMediaCount.Returns<long>();
         totalMediaCount.IncludeInServiceDocument = true;
+        totalMediaCount.Annotate(new Core.Description("How many media the library holds, all types together."));
 
         var allLanguages = builder.Function("AllLanguages");
         allLanguages.Namespace = OperationNamespace;
@@ -182,7 +232,9 @@ public static class EdmModelBuilder
 
         var loanStatistics = builder.Function("LoanStatistics");
         loanStatistics.Namespace = OperationNamespace;
-        loanStatistics.Parameter<DateRange>("Period").Nullable = true;
+        loanStatistics.Parameter<DateRange>("Period")
+            .Annotate(new Core.Description("Restricts the statistics to a period; omit it for all time."))
+            .Nullable = true;
         loanStatistics.Returns<LoanStats>();
 
         var statsPerBranch = builder.Function("StatsPerBranch");
@@ -199,21 +251,26 @@ public static class EdmModelBuilder
         newReleases.IsComposable = true;
         newReleases.IncludeInServiceDocument = true;
 
-        // Overload pair of the reference model: same name, differing number of parameters.
+        // Overload pair of the reference model: same name, differing number of parameters. The
+        // annotations land on the right one of the two because operations are matched by their parameter
+        // names, not by name alone.
         var search = builder.Function("Search");
         search.Namespace = OperationNamespace;
-        search.Parameter<string>("Term");
+        search.Parameter<string>("Term").Annotate(new Core.Description("Matched against title and keywords."));
         search.ReturnsCollectionFromEntitySet<Medium>("Media");
+        search.Annotate(new Core.Description("Media whose title or keywords match the term."));
 
         var searchLimited = builder.Function("Search");
         searchLimited.Namespace = OperationNamespace;
-        searchLimited.Parameter<string>("Term");
-        searchLimited.Parameter<int>("MaxResults");
+        searchLimited.Parameter<string>("Term").Annotate(new Core.Description("Matched against title and keywords."));
+        searchLimited.Parameter<int>("MaxResults").Annotate(new Validation.Minimum(1));
         searchLimited.ReturnsCollectionFromEntitySet<Medium>("Media");
+        searchLimited.Annotate(new Core.Description("As Search(Term), but returns at most MaxResults media."));
 
         var closureDay = builder.Action("ClosureDay");
         closureDay.Namespace = OperationNamespace;
-        closureDay.Parameter<DateOnly>("Date");
+        closureDay.Parameter<DateOnly>("Date").Annotate(new Core.Description("The day the library stays shut."));
+        closureDay.Annotate(new Core.Description("Marks a day as a closure day; due dates move past it."));
 
         var nextInventoryNumber = builder.Action("NextInventoryNumber");
         nextInventoryNumber.Namespace = OperationNamespace;
@@ -343,6 +400,7 @@ public static class EdmModelBuilder
         renew.Namespace = OperationNamespace;
         BindTo<Loan>(builder, renew, "loan");
         renew.ReturnsFromEntitySet<Loan>("Loans");
+        renew.Annotate(new Core.Description("Extends the loan's due date and returns the updated loan."));
 
         var renewAll = loanType.Collection.Action("RenewAll");
         renewAll.Namespace = OperationNamespace;

@@ -195,8 +195,17 @@ public sealed class LibraryContext(DbContextOptions<LibraryContext> options) : D
         {
             copy.HasKey(c => new { c.MediumId, c.InventoryNumber });
 
-            // [ConcurrencyCheck] on Condition is picked up by convention and stops being decoration here:
-            // EF puts the original value into the WHERE clause of every UPDATE.
+            // The concurrency token, and it stops being decoration here: EF puts the original value into
+            // the WHERE clause of every UPDATE. Configured fluently rather than with [ConcurrencyCheck] on
+            // purpose - the attribute is read by *both* stacks, so it would say nothing about whether the
+            // EDM can learn this from EF. This way `Core.OptimisticConcurrency` and `@odata.etag` exist
+            // only because EfCoreTranslation carries the fact over.
+            copy.Property(c => c.Condition).IsConcurrencyToken();
+
+            // The shelf mark, as a column comment. One statement, two outputs: `COMMENT ON COLUMN` in
+            // db/01-schema.sql and `Core.Description` in $metadata.
+            copy.Property(c => c.Location_).HasComment("Shelf mark within the branch.");
+
             copy.HasOne(c => c.Medium!).WithMany(m => m.Copies)
                 .HasForeignKey(c => c.MediumId)
                 .OnDelete(DeleteBehavior.Cascade);
