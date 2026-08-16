@@ -1,0 +1,59 @@
+name: CI
+
+# Runs the request collection in test/ against the image built from this commit.
+#
+# The collection is the executable counterpart to FEATURE-COVERAGE.md: every request carries the status
+# code actually observed, and the harness asserts exactly that - so a change that alters a response either
+# fails here or is written down. Consumers pull this image and assert against its answers, which is why
+# this runs on every pull request rather than only before a publish.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  requests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # The harness only - see .prettierignore. The documentation is hand-wrapped.
+      - name: Check formatting
+        run: npm run format:check
+
+      # Static, no server involved: every request has to carry a `### <status>` annotation, because that
+      # annotation is what the run asserts against. One without it would be sent and its answer accepted
+      # unchecked.
+      - name: Check the annotations
+        run: npm run lint:requests
+
+      - uses: docker/setup-buildx-action@v4
+
+      # The same context and Dockerfile as publish-image.yml, so the layer cache is shared with it.
+      - name: Build the image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: test-server-asp-net:local
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # One fresh container per file: the mutating files assume the seeded state, and a restart is this
+      # server's only reset. See test/harness/run.js.
+      - name: Run the request collection
+        run: node test/harness/run.js

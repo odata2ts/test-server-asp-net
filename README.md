@@ -101,6 +101,13 @@ ones that do *not* answer as the spec suggests ([`limitations.http`](test/limita
 executable counterpart to FEATURE-COVERAGE.md and run in any `.http` client. See
 [`test/README.md`](test/README.md).
 
+CI replays all of them against the image built from the commit and asserts those annotations, one fresh
+container per file. Locally that is:
+
+```bash
+docker build -t test-server-asp-net:local . && npm ci && npm test
+```
+
 ## Layout
 
 | Path                                     | Contents                                                              |
@@ -114,6 +121,7 @@ executable counterpart to FEATURE-COVERAGE.md and run in any `.http` client. See
 | `db/`                                    | The schema (generated from the EF model) and the seed with its fixed keys, as SQL |
 | `docker-entrypoint.sh`                   | Starts Postgres, applies `db/*.sql`, then the service - in that order  |
 | `test/`                                  | The `.http` request collection, one file per category                  |
+| `test/harness/`                          | Replays the collection and asserts the `### <status>` annotations; `npm test` |
 
 Streams (`$value`, the `Sample` stream property, contained chapters) and `$ref` live in
 `Controllers/StreamControllers.cs` and `Controllers/RefControllers.cs`.

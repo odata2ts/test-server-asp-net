@@ -60,6 +60,12 @@ as variables at the top, and **every request annotated with the status code and 
 observed** against the running server. New or changed behaviour gets a request there; the file is the
 executable counterpart to FEATURE-COVERAGE.md.
 
+That annotation is a contract, not a comment: CI replays the whole collection against the image and
+asserts the status code on the **first line** of every `### ` block, so a request without one fails the
+build and a changed response fails it too. Run it locally with `npm test` (needs
+`docker build -t test-server-asp-net:local .` first); `npm run lint:requests` checks the annotations
+alone. The harness is `test/harness/` — nothing runner-specific goes into the `.http` files.
+
 ## Recording coverage
 
 Two files, and the split between them is strict:
