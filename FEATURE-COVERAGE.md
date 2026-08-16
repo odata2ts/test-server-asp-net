@@ -58,12 +58,17 @@ The **protocol and operation surface is reproduced completely**: all 20 entity t
 including both overload pairs, which is the part most implementations lose. Every query option the
 reference model reaches translates to SQL.
 
-What is **not** covered comes down to six things, five of them not this implementation's choice: two CSDL
-attributes the model builder has no API for (`TypeDefinition`, `Unicode`), the `geo.*` functions and
-`$filter`/`$orderby` over an open type's dynamic properties (both the storage layer's price), and the
-`If-Match` precondition, which no part of the stack enforces.
+What is **not** covered comes down to eight things, seven of them not this implementation's choice: three
+pieces of CSDL the model builder has no API for (`TypeDefinition`, `Unicode`, and every `OnDelete` action
+except `Cascade`), the `geo.*` functions and `$filter`/`$orderby` over an open type's dynamic properties
+(both the storage layer's price), the `If-Match` precondition, which no part of the stack enforces, and the
+library's projection, which both fails to truncate a `$compute=date(...)` and breaks outright on a
+date-part function over a nullable property.
 
-The sixth is a choice, and the only place this server knowingly departs from the spec: **it accepts UTC
+Only one is this implementation's own: a contained collection answers 200 with an empty result for a
+parent that does not exist, where the spec wants 404.
+
+The eighth is a choice, and the only place this server knowingly departs from the spec: **it accepts UTC
 timestamps only**. `Edm.DateTimeOffset` permits any offset, and a fully conformant server round-trips
 `+02:00` unchanged; this one answers **400** with a message naming the property and the UTC value to send
 instead. The reasoning is that UTC on the wire and UTC at rest is best practice - it is what the entire
@@ -80,9 +85,10 @@ already speaks UTC never meets this.
 | Complex types incl. abstract base                   | ✅ | ✔ |   |       |
 | Enums incl. flags and non-ASCII members             | ✅ | ✔ | ✔ | need an explicit `EnumType<T>()` registration to survive the namespace fix-up |
 | Four schemas / namespaces                           | ✅ | ✔ | ✔ | `Namespace` collapses every type into one; put back from the CLR namespaces |
-| Navigation properties, referential constraints, `OnDelete` | ✅ | ✔ |   | cascade is real, not just declared |
+| Navigation properties, referential constraints, `OnDelete="Cascade"` | ✅ | ✔ | ✔ | cascade is real, not just declared; all four are taken from EF's `DeleteBehavior` |
+| `OnDelete` actions other than `Cascade`             | ❌ |   |   | CSDL has `SetNull`, `SetDefault` and `None`, and this model sets null five times - but `NavigationPropertyConfiguration` exposes `CascadeOnDelete()` and nothing else, so the behaviour happens and cannot be declared |
 | `Partner` on both sides (6 attributes)              | ✅ | ✔ |   | not inferred by convention; the three-argument `HasRequired`/`HasOptional` overload sets it |
-| Containment                                         | ✅ | ✔ |   | addressable through the type cast, as the spec requires |
+| Containment                                         | ⚠️ | ✔ | ✔ | addressable through the type cast, as the spec requires - but the collection answers 200 with an empty result for a parent that does not exist, where the spec wants 404. This implementation's action ends in `?.Chapters ?? []` |
 | Media entities and stream properties (`HasStream`)  | ✅ | ✔ |   | serving them is a separate row below |
 | Open type, `Edm.Untyped`                            | ✅ | ✔ |   | dynamic properties round-trip, `@odata.type` annotated in the payload |
 | Operations: 29 declarations (15 functions, 14 actions) | ✅ | ✔ | ✔ | 13 function names, two of them overloaded - both pairs survive; one action serves the two `Search` overloads |
@@ -144,6 +150,7 @@ Every option below is translated to SQL by EF Core, not applied in memory.
 | `$id`, alternate key in `$filter`                   | ✅ | ✔ |   | needs `AlternateKeysODataUriResolver` in the per-route container |
 | Date-part functions over `Edm.DateTimeOffset` (`hour()`, `year()`, `month()`, `now()`, `date()`) | ✅ | ✔ |   | `timestamptz`, so every part is available to SQL. Was ❌ while the column was an integer tick count |
 | `$compute=date(...)` over `Edm.DateTimeOffset`      | ❌ |   |   | declares `Edm.Date` and returns the whole timestamp. The library's projection - the same function in `$filter` is correct |
+| Date-part function over a *nullable* property, in a projection | ❌ |   |   | 500 *Nullable object must have a value* once a null row is materialised - the result is typed non-nullable. Needs all three: the date-part function, the nullable source, and a projection, which `$compute` always is and `$orderby` becomes as soon as `$select` is present. `$filter` never is |
 | Date-part functions over `Edm.Duration` (`totalseconds()`) | ❌ |   |   | the library declares no such function: 400 *Unknown function*, so the store is never asked |
 | `geo.*` functions                                   | ❌ |   |   | spatial values are stored as WKT; EF Core's spatial support is NetTopologySuite-only and does not speak `Microsoft.Spatial` at all |
 | `$filter` / `$orderby` on an open type's dynamic properties | ❌ |   |   | stored as JSON - but the URI parser refuses an undeclared property with 400 before the store is ever asked |

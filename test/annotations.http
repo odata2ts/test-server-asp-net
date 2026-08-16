@@ -142,9 +142,10 @@ GET {{host}}/Media({{audiobook}})/Library.Catalog.Audiobook/Chapters
 ### 204 - Audiobook/Chapters cascades
 DELETE {{host}}/Media({{audiobook}})
 
-### 200 - and an empty collection, not a 404: the contained path still routes
-### once its parent is gone, which is the library's doing rather than the
-### cascade's. The parent itself answers 404.
+### 200 - and an empty collection, not a 404. The chapters really are gone with
+### their audiobook; what answers 200 is the contained path never asking
+### whether its parent exists, which is this implementation's doing and not the
+### cascade's - see limitations.http. The parent itself answers 404.
 GET {{host}}/Media({{audiobook}})/Library.Catalog.Audiobook/Chapters
 
 ### 404 - the audiobook

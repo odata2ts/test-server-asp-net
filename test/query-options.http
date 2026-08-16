@@ -77,7 +77,9 @@ GET {{host}}/Loans?$filter=hour(LoanedAt) eq 10
 GET {{host}}/Loans?$filter=LoanedAt lt now()
 
 ### 200 - one loan: date() answers equality correctly, ne/ge/le likewise.
-### Only $compute=date(...) still fails to truncate - see limitations.http.
+### $filter is the safe place for these: it is the projection that goes wrong,
+### both for $compute=date(...) and for any date-part function over a nullable
+### property - see limitations.http.
 GET {{host}}/Loans?$filter=date(LoanedAt) eq 2026-06-01
 
 ### 200 - Edm.Decimal compared and ordered as a number, stored as numeric(9,2)
