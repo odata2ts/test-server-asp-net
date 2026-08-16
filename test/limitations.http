@@ -59,6 +59,54 @@ Content-Type: application/json
 GET {{host}}/Loans?$compute=date(LoanedAt) as D&$select=Id,D
 
 ###############################################################################
+# The library: a date-part function over a nullable property breaks the
+# projection
+#
+# The same projection as above, and the same root: year(), month() and their
+# kind return a non-nullable Int32, so wherever the library has to carry the
+# expression into the projection, a row whose source value is null answers 500
+# "Nullable object must have a value" instead of a null.
+#
+# Three things have to come together, and leaving out any one of them works:
+#   - a date-part function ... length() over a nullable string is fine
+#   - a nullable source ..... the same call over a non-nullable one is fine
+#   - a projection .......... $compute always builds one; $orderby only once
+#                             $select is there; $filter never does
+###############################################################################
+
+### 500 - InvalidOperationException, "Nullable object must have a value".
+### PublicationDate is nullable and the CollectorsItem has none.
+GET {{host}}/Media?$compute=year(PublicationDate) as Y&$select=Y
+
+### 500 - month() likewise, so it is not one function's defect
+GET {{host}}/Media?$compute=month(PublicationDate) as M&$select=M
+
+### 500 - and over a nullable Edm.DateTimeOffset just the same. Every loan is
+### still out, so every ReturnedAt is null.
+GET {{host}}/Loans?$compute=year(ReturnedAt) as Y&$select=Y
+
+### 500 - $orderby reaches the projection as soon as a $select is present
+GET {{host}}/Media?$orderby=year(PublicationDate)&$select=Title
+
+### 200 - the identical $orderby without a $select: the sorting happens in SQL
+### and whole entities come back, so nothing is projected
+GET {{host}}/Media?$orderby=year(PublicationDate)
+
+### 200 - $filter never projects, with or without a $select
+GET {{host}}/Media?$filter=year(PublicationDate) eq 1925&$select=Title
+
+### 200 - the same $compute with the null rows filtered away. Whether it fails
+### depends on the rows that are materialised, not on the expression: $top=1
+### over the first medium, which has a date, answers 200 as well.
+GET {{host}}/Media?$filter=PublicationDate ne null&$compute=year(PublicationDate) as Y&$select=Y
+
+### 200 - a non-nullable source projects without complaint
+GET {{host}}/Loans?$compute=year(DueDate) as Y&$select=Y
+
+### 200 - and so does a nullable string, so it is the date-part function
+GET {{host}}/Media?$compute=length(Language) as L&$select=L
+
+###############################################################################
 # The persistence layer: the spatial types are stored as WKT text
 #
 # EF Core's spatial support is NetTopologySuite-only and would additionally
@@ -116,6 +164,20 @@ If-Match: W/"AAAA"
 ### 404 - a single contained entity by key is not served. Only the collection
 ### and the chapter's stream are, see read.http and streams.http.
 GET {{host}}/Media({{audiobook}})/Library.Catalog.Audiobook/Chapters(1)
+
+### 200 with an empty collection, where the spec wants 404: the contained
+### collection never asks whether its parent exists. The action behind it ends
+### in `?.Chapters ?? []`, so a missing audiobook becomes an empty result
+### rather than a missing resource. A one-line fix, kept as an observed fact
+### until it is made - the container image is consumed by other suites.
+GET {{host}}/Media(00000000-0000-0000-0000-000000000000)/Library.Catalog.Audiobook/Chapters
+
+### 404 - that same parent, addressed directly, is correctly missing
+GET {{host}}/Media(00000000-0000-0000-0000-000000000000)
+
+### 200, empty - and the medium need not even be an audiobook: this is the
+### book, cast to Audiobook
+GET {{host}}/Media({{book}})/Library.Catalog.Audiobook/Chapters
 
 ### 404 - $entity?$id= is not routed
 GET {{host}}/$entity?$id=Media({{book}})
