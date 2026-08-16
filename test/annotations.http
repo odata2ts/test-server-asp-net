@@ -114,43 +114,6 @@ GET {{host}}/Copies?$select=Location_
 ### EdmModelBuilder. The facet and the numeric column cannot disagree.
 GET {{host}}/Members?$select=Balance
 
-### The four <OnDelete Action="Cascade"/> match what the database does. Each
-### pair below is: what is there, then what is left after the delete. They
-### change the store - run them last, and restart for a clean slate.
-
-### 200 - one loan and one reservation belong to member 1
-GET {{host}}/Loans?$select=Id
-
-### 204 - Member/Loans and Member/Reservations both cascade
-DELETE {{host}}/Members(1)
-
-### 200 - empty: the loan went with the member
-GET {{host}}/Loans?$select=Id
-
-### 200 - the DVD has one copy
-GET {{host}}/Copies?$filter=MediumId eq 66666666-6666-6666-6666-666666666666
-
-### 204 - Medium/Copies cascades
-DELETE {{host}}/Media(66666666-6666-6666-6666-666666666666)
-
-### 200 - empty: the copy went with the medium
-GET {{host}}/Copies?$filter=MediumId eq 66666666-6666-6666-6666-666666666666
-
-### 200 - the audiobook has two contained chapters
-GET {{host}}/Media({{audiobook}})/Library.Catalog.Audiobook/Chapters
-
-### 204 - Audiobook/Chapters cascades
-DELETE {{host}}/Media({{audiobook}})
-
-### 200 - and an empty collection, not a 404. The chapters really are gone with
-### their audiobook; what answers 200 is the contained path never asking
-### whether its parent exists, which is this implementation's doing and not the
-### cascade's - see limitations.http. The parent itself answers 404.
-GET {{host}}/Media({{audiobook}})/Library.Catalog.Audiobook/Chapters
-
-### 404 - the audiobook
-GET {{host}}/Media({{audiobook}})
-
 ###############################################################################
 # Core.AcceptableMediaTypes - the declared type is the type actually served
 ###############################################################################
@@ -209,3 +172,44 @@ GET {{host}}/Members?$select=Balance
 ### 200 - Core.AdditionalProperties on CollectorsItem: the type is open, and
 ### Appraisal and Insured are the undeclared properties it carries
 GET {{host}}/Media({{collectorsItem}})
+
+###############################################################################
+# Capabilities: the four <OnDelete Action="Cascade"/> match what the database
+# does. Each pair below is: what is there, then what is left after the delete.
+#
+# Last in the file, because these are the only requests here that change the
+# store - everything above reads. Restart for a clean slate.
+###############################################################################
+
+### 200 - one loan and one reservation belong to member 1
+GET {{host}}/Loans?$select=Id
+
+### 204 - Member/Loans and Member/Reservations both cascade
+DELETE {{host}}/Members(1)
+
+### 200 - empty: the loan went with the member
+GET {{host}}/Loans?$select=Id
+
+### 200 - the DVD has one copy
+GET {{host}}/Copies?$filter=MediumId eq 66666666-6666-6666-6666-666666666666
+
+### 204 - Medium/Copies cascades
+DELETE {{host}}/Media(66666666-6666-6666-6666-666666666666)
+
+### 200 - empty: the copy went with the medium
+GET {{host}}/Copies?$filter=MediumId eq 66666666-6666-6666-6666-666666666666
+
+### 200 - the audiobook has two contained chapters
+GET {{host}}/Media({{audiobook}})/Library.Catalog.Audiobook/Chapters
+
+### 204 - Audiobook/Chapters cascades
+DELETE {{host}}/Media({{audiobook}})
+
+### 200 - and an empty collection, not a 404. The chapters really are gone with
+### their audiobook; what answers 200 is the contained path never asking
+### whether its parent exists, which is this implementation's doing and not the
+### cascade's - see limitations.http. The parent itself answers 404.
+GET {{host}}/Media({{audiobook}})/Library.Catalog.Audiobook/Chapters
+
+### 404 - the audiobook
+GET {{host}}/Media({{audiobook}})

@@ -1,0 +1,11 @@
+node_modules
+package-lock.json
+.claude
+
+# Prettier is here for the test harness only. The documentation is hand-wrapped, the .http collection is
+# annotated prose next to requests, db/01-schema.sql is generated and the workflows are not JavaScript -
+# none of it is prettier's to reflow.
+*.md
+.github/
+db/
+src/

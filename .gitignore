@@ -3,6 +3,9 @@ bin/
 obj/
 *.user
 
+# Test harness (test/harness, see package.json)
+node_modules/
+
 # Local data
 *.db
 *.db-shm

@@ -1,0 +1,18 @@
+{
+  "name": "test-server-asp-net",
+  "private": true,
+  "description": "Test harness for the request collection in test/ - the service itself is .NET, see README.md",
+  "license": "MIT",
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint:requests": "node test/harness/lint.js",
+    "test": "npm run lint:requests && node test/harness/run.js"
+  },
+  "devDependencies": {
+    "@ianvs/prettier-plugin-sort-imports": "^4.7.1",
+    "httpyac": "6.16.7",
+    "prettier": "^3.9.6",
+    "prettier-plugin-packagejson": "^3.0.2"
+  }
+}

@@ -15,6 +15,30 @@ dotnet run --project src/LibraryService
 `@host` is set to `http://localhost:5091/odata/v4/library` (the `dotnet run` port); the container image
 listens on `4004`.
 
+## Running the whole collection
+
+CI runs it on every pull request, and so can you - against the image, which is what consumers pull:
+
+```bash
+docker build -t test-server-asp-net:local . && npm ci && npm test
+```
+
+One file at a time, once the image is built:
+
+```bash
+node test/harness/run.js test/query-options.http
+```
+
+The harness is in [`harness/`](harness) and asserts what the files already state: the status code on the
+first line of each `### ` block. Nothing runner-specific is written into the `.http` files - they stay
+plain, and the annotation stays the one statement of the expected result. A handful of responses whose
+*content* is the point are pinned in [`harness/expectations.js`](harness/expectations.js) on top of that;
+full response snapshots are deliberately not taken yet, while the server is still moving.
+
+Every file gets a fresh container, because several of them delete or renumber the same seed rows and there
+is no order that makes them independent. `npm run lint:requests` checks the annotations alone, without a
+server.
+
 | File                                       | Contents                                                                     |
 | ------------------------------------------ | ---------------------------------------------------------------------------- |
 | [`service.http`](service.http)             | Service document and `$metadata`                                              |
