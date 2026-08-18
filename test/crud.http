@@ -209,6 +209,46 @@ GET {{host}}/Copies(MediumId={{book}},InventoryNumber=98)/Location
 ### 204
 DELETE {{host}}/Copies(MediumId={{book}},InventoryNumber=98)
 
+### 201 - a deep insert and a binding in one payload: the copy is created with
+### the book, the branch it names already exists. Add() tracks the whole graph
+### as Added, so the bound branch has to be swapped for the stored one first -
+### without that this dies on PK_Branches with a 500.
+POST {{host}}/Media
+Content-Type: application/json
+
+{
+  "@odata.type": "#Library.Catalog.Book",
+  "Title": "Deep Insert mit Bindung",
+  "Language": "de",
+  "ISBN": "9780000000098",
+  "PageCount": 42,
+  "Publisher@odata.bind": "{{host}}/Publishers(1)",
+  "Copies": [
+    {
+      "InventoryNumber": 97,
+      "Condition": 1,
+      "Location@odata.bind": "{{host}}/Branches(2)"
+    }
+  ]
+}
+
+### 200 - both branches unchanged: a bound entity is linked, never written
+GET {{host}}/Branches?$select=Id,Name&$orderby=Id
+
+### 400 - a binding naming an entity that does not exist is refused here rather
+### than failing on a foreign key
+POST {{host}}/Media
+Content-Type: application/json
+
+{
+  "@odata.type": "#Library.Catalog.Book",
+  "Title": "Bindung ins Leere",
+  "Language": "de",
+  "ISBN": "9780000000099",
+  "PageCount": 42,
+  "Publisher@odata.bind": "{{host}}/Publishers(999)"
+}
+
 ###############################################################################
 # The managed-property terms are declared but never enforced
 #

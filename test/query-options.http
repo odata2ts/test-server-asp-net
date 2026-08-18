@@ -36,6 +36,21 @@ GET {{host}}/Loans?$orderby=Member/Name&$select=Id
 ### 400 - a client-invented token is refused; $skiptoken values are server-generated
 GET {{host}}/Media?$select=Title&$skiptoken=x
 
+### 200 - a nested $select descends into a complex property, no $expand involved
+GET {{host}}/Branches(1)?$select=Name,Address($select=City,Country)
+
+### 200 - and the wildcard form, which asks for the whole complex value. This is
+### the shape that makes OData project the owned entity by itself, which EF
+### refuses to track: served only because the read queries are AsNoTracking.
+GET {{host}}/Branches(1)?$select=Name,Address($select=*)
+
+### 200 - the same over a collection, where the failure used to arrive as a 500
+### mid-payload rather than as a 400
+GET {{host}}/Members?$select=Name,Address($select=*)
+
+### 200 - and over a *collection* of complex values
+GET {{host}}/Members?$select=Name,PreviousAddresses($select=*)
+
 ###############################################################################
 # $filter
 ###############################################################################

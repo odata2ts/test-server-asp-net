@@ -91,7 +91,7 @@ public class LibraryOperationsController(LibraryContext db) : ODataController
     [HttpGet("odata/v4/library/NewReleases()")]
     [EnableQuery]
     public IQueryable<Medium> NewReleases() =>
-        db.Media.Where(m => m.PublicationDate >= new DateOnly(2020, 1, 1)).AsQueryable();
+        db.Media.AsNoTracking().Where(m => m.PublicationDate >= new DateOnly(2020, 1, 1));
 
     /// <summary>
     /// Both overloads of <c>Search</c> - with and without <c>MaxResults</c> - in one action.
@@ -187,7 +187,7 @@ public class LibraryOperationsController(LibraryContext db) : ODataController
     [HttpPost("odata/v4/library/RunStockCheck")]
     [EnableQuery]
     public IQueryable<Medium> RunStockCheck() =>
-        db.Media.Where(m => m.Copies.Count == 0).AsQueryable();
+        db.Media.AsNoTracking().Where(m => m.Copies.Count == 0);
 
     internal static OverdueNotice Notice(Loan loan) =>
         new()
@@ -203,7 +203,7 @@ public class LibraryOperationsController(LibraryContext db) : ODataController
     /// explicit about the intent and leaves nothing to the column's collation.
     /// </summary>
     private IQueryable<Medium> Matching(string term) =>
-        db.Media.Where(m => m.Title.ToLower().Contains(term.ToLower()));
+        db.Media.AsNoTracking().Where(m => m.Title.ToLower().Contains(term.ToLower()));
 }
 
 /// <summary>Operations bound to <c>Library.Catalog.Medium</c>, single instance and collection.</summary>
@@ -234,13 +234,13 @@ public class MediaOperationsController(LibraryContext db) : ODataController
     [HttpGet("odata/v4/library/Media({key})/Library.Circulation.AvailableCopies()")]
     [EnableQuery]
     public IQueryable<Copy> AvailableCopies([FromRoute] Guid key) =>
-        db.Copies.Where(c => c.MediumId == key && c.Status == AvailabilityStatus.Available).AsQueryable();
+        db.Copies.AsNoTracking().Where(c => c.MediumId == key && c.Status == AvailabilityStatus.Available);
 
     /// <summary>Second overload of the pair - bound to the collection rather than to one instance.</summary>
     [HttpGet("odata/v4/library/Media/Library.Circulation.AvailableCopies()")]
     [EnableQuery]
     public IQueryable<Copy> AvailableCopiesForAll() =>
-        db.Copies.Where(c => c.Status == AvailabilityStatus.Available).AsQueryable();
+        db.Copies.AsNoTracking().Where(c => c.Status == AvailabilityStatus.Available);
 
     [HttpGet("odata/v4/library/Media/Library.Circulation.AvailableLanguages()")]
     public IEnumerable<string> AvailableLanguages() =>

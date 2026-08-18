@@ -123,7 +123,7 @@ as GeoJSON including `"crs": {"name": "EPSG:4326"}`.
 | `$ref`, both cardinalities                          | ✅ |   | ✔ | verbs differ per cardinality as the spec requires |
 | Deep insert                                         | ✅ | ✔ | ✔ | the library leaves the children keyless and outside their own set; the controller registers them |
 | Missing required action parameter answers 400       | ✅ |   | ✔ | a body carrying none of the declared parameters binds to a *null* `ODataActionParameters`; unguarded that is a 500 |
-| `@odata.bind` and `{"@id": …}`, incl. binding to null | ✅ |   | ✔ | routing a binding through `Delta<T>` corrupts the store - read from the raw body instead |
+| `@odata.bind` and `{"@id": …}`, incl. binding to null | ✅ |   | ✔ | routing a binding through `Delta<T>` corrupts the store - read from the raw body instead; on a create the bound stub is `Add`ed with the graph and has to be swapped for the stored entity first |
 | Delta payloads (OData 4.01)                         | ✅ | ✔ |   | update, removal and upsert in one request, delta response |
 | `$batch` (JSON)                                     | ✅ | ✔ |   | each sub-request its own unit of work |
 | Query options in the body (`POST <resource>/$query`) | ✅ | ✔ |   | `UseODataQueryRequest()` must sit *before* `UseRouting()`, else 405 |
@@ -143,7 +143,7 @@ Every option below is translated to SQL by EF Core, not applied in memory.
 | `$filter` on `Edm.Date` / `Edm.TimeOfDay`           | ✅ |   | ✔ | the stock binder rebuilds both operands as a number - correct but unindexable for dates, untranslatable for times (500); a replacement filter binder restates it as one comparison |
 | `$orderby`, incl. across a navigation property      | ✅ | ✔ |   |       |
 | `$top`, `$skip`, `$count`                           | ✅ | ✔ |   |       |
-| `$select`, `$expand`, nested `$expand` options      | ✅ | ✔ |   |       |
+| `$select`, `$expand`, nested `$expand` options      | ✅ | ✔ | ✔ | a nested `$select` on a complex property (`Address($select=*)`) projects the owned entity by itself, which EF refuses to *track*; the read queries go out `AsNoTracking` |
 | `$compute`                                          | ✅ | ✔ |   |       |
 | `$apply` (`groupby`, `aggregate`)                   | ✅ | ✔ |   |       |
 | `$search`                                           | ✅ |   | ✔ | without an `ISearchBinder` it is accepted and **silently ignored**; the binder only takes effect in the per-route container |

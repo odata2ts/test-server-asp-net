@@ -14,15 +14,21 @@ namespace LibraryService.Controllers;
 /// <summary>
 /// The plain entity sets. `[EnableQuery]` hands `$select`, `$filter`, `$orderby`, `$top`, `$skip`,
 /// `$count` and `$expand` to the OData layer, which applies them to the returned <see cref="IQueryable{T}" />.
+///
+/// A queryable the database still has to answer goes out <c>AsNoTracking</c> throughout: the change
+/// tracker exists for the write paths, and a read that fills it buys nothing. It is not only tidiness -
+/// <c>$select</c> on a complex property makes OData project the owned type on its own
+/// (<c>Address($select=*)</c>), and EF refuses to track an owned entity apart from its owner, so the
+/// request failed outright. The write paths query separately and stay tracked.
 /// </summary>
 public class MediaController(LibraryContext db) : ODataController
 {
     [EnableQuery(MaxExpansionDepth = 4)]
-    public IQueryable<Medium> Get() => db.Media.AsQueryable();
+    public IQueryable<Medium> Get() => db.Media.AsNoTracking();
 
     [EnableQuery]
     public SingleResult<Medium> Get([FromRoute] Guid key) =>
-        SingleResult.Create(db.Media.Where(m => m.Id == key).AsQueryable());
+        SingleResult.Create(db.Media.AsNoTracking().Where(m => m.Id == key));
 
     /// <summary>
     /// Addressing by the <c>Core.AlternateKeys</c> key on <c>PrintMedium/ISBN</c>. The route template has
@@ -34,25 +40,25 @@ public class MediaController(LibraryContext db) : ODataController
     public SingleResult<PrintMedium> GetByIsbn([FromRoute] string isbn)
     {
         var value = isbn.Trim('\'');
-        return SingleResult.Create(db.Media.OfType<PrintMedium>().Where(m => m.ISBN == value).AsQueryable());
+        return SingleResult.Create(db.Media.AsNoTracking().OfType<PrintMedium>().Where(m => m.ISBN == value));
     }
 
     /// <summary>Type-cast segment, e.g. <c>/Media/Library.Catalog.Book</c>.</summary>
     [EnableQuery]
-    public IQueryable<Book> GetFromBook() => db.Media.OfType<Book>().AsQueryable();
+    public IQueryable<Book> GetFromBook() => db.Media.AsNoTracking().OfType<Book>();
 
     [EnableQuery]
-    public IQueryable<EBook> GetFromEBook() => db.Media.OfType<EBook>().AsQueryable();
+    public IQueryable<EBook> GetFromEBook() => db.Media.AsNoTracking().OfType<EBook>();
 
     [EnableQuery]
-    public IQueryable<Audiobook> GetFromAudiobook() => db.Media.OfType<Audiobook>().AsQueryable();
+    public IQueryable<Audiobook> GetFromAudiobook() => db.Media.AsNoTracking().OfType<Audiobook>();
 
     [EnableQuery]
-    public IQueryable<CollectorsItem> GetFromCollectorsItem() => db.Media.OfType<CollectorsItem>().AsQueryable();
+    public IQueryable<CollectorsItem> GetFromCollectorsItem() => db.Media.AsNoTracking().OfType<CollectorsItem>();
 
     [EnableQuery]
     public IQueryable<Copy> GetCopies([FromRoute] Guid key) =>
-        db.Copies.Where(c => c.MediumId == key).AsQueryable();
+        db.Copies.AsNoTracking().Where(c => c.MediumId == key);
 
     [EnableQuery]
     public ActionResult<PublisherRegistry.Publisher> GetPublisherFromBook([FromRoute] Guid key) =>
@@ -72,6 +78,13 @@ public class MediaController(LibraryContext db) : ODataController
         if (medium.Id == Guid.Empty)
         {
             medium.Id = Guid.NewGuid();
+        }
+
+        // Before the graph is tracked: a navigation the payload bound - the publisher of a book, the
+        // branch a nested copy is shelved at - has to be linked, and Add would insert it.
+        if (!NavigationBinding.Resolve(db, Request, medium))
+        {
+            return BadRequest("A navigation binding in the request body names an entity that does not exist.");
         }
 
         db.Media.Add(medium);
@@ -141,7 +154,7 @@ public class MediaController(LibraryContext db) : ODataController
 public class CopiesController(LibraryContext db) : ODataController
 {
     [EnableQuery]
-    public IQueryable<Copy> Get() => db.Copies.AsQueryable();
+    public IQueryable<Copy> Get() => db.Copies.AsNoTracking();
 
     /// <summary>
     /// Composite key. Routed explicitly: the convention builds `keyMediumId` / `keyInventoryNumber`
@@ -151,7 +164,7 @@ public class CopiesController(LibraryContext db) : ODataController
     [EnableQuery]
     public SingleResult<Copy> Get([FromRoute] Guid keyMediumId, [FromRoute] int keyInventoryNumber) =>
         SingleResult.Create(
-            db.Copies.Where(c => c.MediumId == keyMediumId && c.InventoryNumber == keyInventoryNumber).AsQueryable());
+            db.Copies.AsNoTracking().Where(c => c.MediumId == keyMediumId && c.InventoryNumber == keyInventoryNumber));
 
     [HttpGet("odata/v4/library/Copies(MediumId={keyMediumId},InventoryNumber={keyInventoryNumber})/Medium")]
     [EnableQuery]
@@ -335,11 +348,11 @@ public class CopiesController(LibraryContext db) : ODataController
 public class MembersController(LibraryContext db) : ODataController
 {
     [EnableQuery(MaxExpansionDepth = 4)]
-    public IQueryable<Member> Get() => db.Members.AsQueryable();
+    public IQueryable<Member> Get() => db.Members.AsNoTracking();
 
     [EnableQuery]
     public SingleResult<Member> Get([FromRoute] int key) =>
-        SingleResult.Create(db.Members.Where(m => m.Id == key).AsQueryable());
+        SingleResult.Create(db.Members.AsNoTracking().Where(m => m.Id == key));
 
     /// <summary>
     /// The member's loans. Queried straight off the loans set rather than through the member's navigation
@@ -348,21 +361,28 @@ public class MembersController(LibraryContext db) : ODataController
     /// </summary>
     [EnableQuery]
     public IQueryable<Loan> GetLoans([FromRoute] int key) =>
-        db.Loans.Where(l => l.Member != null && l.Member.Id == key);
+        db.Loans.AsNoTracking().Where(l => l.Member != null && l.Member.Id == key);
 
     [EnableQuery]
     public IQueryable<Reservation> GetReservations([FromRoute] int key) =>
-        (db.Members.Include(m => m.Reservations).FirstOrDefault(m => m.Id == key)?.Reservations ?? [])
+        (db.Members.AsNoTracking().Include(m => m.Reservations).FirstOrDefault(m => m.Id == key)?.Reservations ?? [])
             .AsQueryable();
 
     [EnableQuery]
     public ActionResult<IdDocument> GetIdDocument([FromRoute] int key) =>
-        db.Members.Include(m => m.IdDocument).FirstOrDefault(m => m.Id == key)?.IdDocument is { } document
+        db.Members.AsNoTracking().Include(m => m.IdDocument).FirstOrDefault(m => m.Id == key)?.IdDocument is { } document
             ? document
             : NotFound();
 
     public IActionResult Post([FromBody] Member member)
     {
+        // Same as on Media: an id document or a nested loan's copy may be bound rather than nested, and
+        // that is only decidable from the body - see NavigationBinding.Resolve.
+        if (!NavigationBinding.Resolve(db, Request, member))
+        {
+            return BadRequest("A navigation binding in the request body names an entity that does not exist.");
+        }
+
         member.Id = NextMemberId();
         db.Members.Add(member);
         RegisterNested(member);
@@ -527,11 +547,11 @@ public class MembersController(LibraryContext db) : ODataController
 public class LoansController(LibraryContext db) : ODataController
 {
     [EnableQuery]
-    public IQueryable<Loan> Get() => db.Loans.AsQueryable();
+    public IQueryable<Loan> Get() => db.Loans.AsNoTracking();
 
     [EnableQuery]
     public SingleResult<Loan> Get([FromRoute] Guid key) =>
-        SingleResult.Create(db.Loans.Where(l => l.Id == key).AsQueryable());
+        SingleResult.Create(db.Loans.AsNoTracking().Where(l => l.Id == key));
 
     [EnableQuery]
     public ActionResult<Member> GetMember([FromRoute] Guid key) =>
@@ -574,51 +594,51 @@ public class LoansController(LibraryContext db) : ODataController
 public class ReservationsController(LibraryContext db) : ODataController
 {
     [EnableQuery]
-    public IQueryable<Reservation> Get() => db.Reservations.AsQueryable();
+    public IQueryable<Reservation> Get() => db.Reservations.AsNoTracking();
 
     [EnableQuery]
     public SingleResult<Reservation> Get([FromRoute] Guid key) =>
-        SingleResult.Create(db.Reservations.Where(r => r.Id == key).AsQueryable());
+        SingleResult.Create(db.Reservations.AsNoTracking().Where(r => r.Id == key));
 }
 
 public class IdDocumentsController(LibraryContext db) : ODataController
 {
     [EnableQuery]
-    public IQueryable<IdDocument> Get() => db.IdDocuments.AsQueryable();
+    public IQueryable<IdDocument> Get() => db.IdDocuments.AsNoTracking();
 
     [EnableQuery]
     public SingleResult<IdDocument> Get([FromRoute] Guid key) =>
-        SingleResult.Create(db.IdDocuments.Where(d => d.Id == key).AsQueryable());
+        SingleResult.Create(db.IdDocuments.AsNoTracking().Where(d => d.Id == key));
 }
 
 public class BranchesController(LibraryContext db) : ODataController
 {
     [EnableQuery]
-    public IQueryable<Branch> Get() => db.Branches.AsQueryable();
+    public IQueryable<Branch> Get() => db.Branches.AsNoTracking();
 
     [EnableQuery]
     public SingleResult<Branch> Get([FromRoute] int key) =>
-        SingleResult.Create(db.Branches.Where(b => b.Id == key).AsQueryable());
+        SingleResult.Create(db.Branches.AsNoTracking().Where(b => b.Id == key));
 }
 
 public class BookmobilesController(LibraryContext db) : ODataController
 {
     [EnableQuery]
-    public IQueryable<Bookmobile> Get() => db.Bookmobiles.AsQueryable();
+    public IQueryable<Bookmobile> Get() => db.Bookmobiles.AsNoTracking();
 
     [EnableQuery]
     public SingleResult<Bookmobile> Get([FromRoute] int key) =>
-        SingleResult.Create(db.Bookmobiles.Where(b => b.Id == key).AsQueryable());
+        SingleResult.Create(db.Bookmobiles.AsNoTracking().Where(b => b.Id == key));
 }
 
 public class PublishersController(LibraryContext db) : ODataController
 {
     [EnableQuery]
-    public IQueryable<PublisherRegistry.Publisher> Get() => db.Publishers.AsQueryable();
+    public IQueryable<PublisherRegistry.Publisher> Get() => db.Publishers.AsNoTracking();
 
     [EnableQuery]
     public SingleResult<PublisherRegistry.Publisher> Get([FromRoute] int key) =>
-        SingleResult.Create(db.Publishers.Where(p => p.Id == key).AsQueryable());
+        SingleResult.Create(db.Publishers.AsNoTracking().Where(p => p.Id == key));
 
     /// <summary>
     /// Straight off the media set rather than through the publisher's navigation property, so the query
@@ -626,17 +646,17 @@ public class PublishersController(LibraryContext db) : ODataController
     /// </summary>
     [EnableQuery]
     public IQueryable<Book> GetBooks([FromRoute] int key) =>
-        db.Media.OfType<Book>().Where(b => b.Publisher != null && b.Publisher.Id == key);
+        db.Media.AsNoTracking().OfType<Book>().Where(b => b.Publisher != null && b.Publisher.Id == key);
 }
 
 public class PublisherBranchesController(LibraryContext db) : ODataController
 {
     [EnableQuery]
-    public IQueryable<PublisherRegistry.Branch> Get() => db.PublisherBranches.AsQueryable();
+    public IQueryable<PublisherRegistry.Branch> Get() => db.PublisherBranches.AsNoTracking();
 
     [EnableQuery]
     public SingleResult<PublisherRegistry.Branch> Get([FromRoute] int key) =>
-        SingleResult.Create(db.PublisherBranches.Where(b => b.Id == key).AsQueryable());
+        SingleResult.Create(db.PublisherBranches.AsNoTracking().Where(b => b.Id == key));
 }
 
 /// <summary>The <c>MainBranch</c> singleton.</summary>
