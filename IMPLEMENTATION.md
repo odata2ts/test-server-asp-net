@@ -384,6 +384,26 @@ during change detection, sees a key it did not generate, concludes the row exist
 that matches nothing. The entity has to be `Add`ed to its own set; linking it is a second step. This bit
 both the seed and `Reserve`, and it is silent until `SaveChanges` runs.
 
+### A read must not fill the change tracker
+
+Every queryable handed to `[EnableQuery]` goes out `AsNoTracking`. Not only because tracking a read is
+waste: `$select` on a complex property makes OData project the owned type by itself,
+
+```
+GET /Branches(1)?$select=Name,Address($select=*)
+```
+
+and EF refuses to track an owned entity apart from its owner - *"A tracking query is attempting to project
+an owned entity without a corresponding owner in its result"*. The request failed outright, as a 400 for a
+single entity and as a 500 for a collection, where the exception only arrives once the payload is already
+being enumerated. `Address($select=City,Country)` was served all along: a projection of *some* of the owned
+properties is a projection of values, and only the whole owned instance is an entity EF would have to
+track.
+
+The write paths query separately and stay tracked - `PATCH` and `DELETE` load their entity through their
+own `FirstOrDefault`, and `RenewAll` mutates what it read. Untracking those would be silent: `SaveChanges`
+writes nothing and still answers 204.
+
 ### What the database gained
 
 Three things stopped being decoration:
@@ -488,6 +508,27 @@ the store held
 two entities with the same key, and the request answered `204`. Nothing looks wrong until the next read.
 The bindings are therefore read from the raw request body and resolved against the store by key, which
 needs `Request.EnableBuffering()` so the body survives model binding.
+
+**On a create, the bound stub has to be replaced before the graph is tracked.** The stub the deserializer
+builds sits in the navigation property of an entity that is about to be `Add`ed, and `Add` tracks
+everything it can reach as `Added` - so the request tries to `INSERT` the very row it was asked to link and
+dies on its primary key:
+
+```
+23505: duplicate key value violates unique constraint "PK_Branches"
+```
+
+Every bound navigation was affected, at any depth: a book's publisher, a collector's item's storage
+location, a nested copy's branch, a nested loan's copy. Over the in-memory store nothing of the sort
+happened - there was no insert, only a reference being assigned - which is why the move to a database
+turned a working feature into a 500 without a line of the create paths changing.
+
+Which of the two arrived is a question about the *payload*: a bound stub and a deep-inserted entity that
+brings its own key are the same object by the time the controller sees them. `NavigationBinding.Resolve`
+therefore walks the JSON body alongside the object graph and swaps each bound navigation for the stored
+entity, which is then tracked `Unchanged` and only linked. Keys are read through EF's own metadata, so a
+composite one - `Copies(MediumId=…,InventoryNumber=…)` - needs nothing extra; a binding naming an entity
+that does not exist answers 400 instead of failing on a foreign key.
 
 **A binding on a navigation property backed by a referential constraint is refused outright.**
 `Medium@odata.bind` on a `Copy` - whose `MediumId` is tied to `Medium/Id` by a `ReferentialConstraint` -

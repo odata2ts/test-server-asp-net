@@ -95,6 +95,25 @@ module.exports = {
     },
   ],
 
+  "crud.http": [
+    {
+      request: "GET {{host}}/Branches?$select=Id,Name&$orderby=Id",
+      // Read right after a create that *bound* a branch. A binding gone wrong does not announce itself in
+      // the status code: the create answers 201 either way, and what is left behind is a branch carrying
+      // someone else's name - or, with the graph tracked as Added throughout, a second row under the same
+      // key. Both are only visible here.
+      assert: ({ body, assert }) => {
+        assert.deepEqual(
+          body.value.map((branch) => [branch.Id, branch.Name]),
+          [
+            [1, "Central Library"],
+            [2, "Suburban Branch"],
+          ],
+        );
+      },
+    },
+  ],
+
   "query-options.http": [
     {
       request: "GET {{host}}/Media?$orderby=Title&$top=2&$count=true",
