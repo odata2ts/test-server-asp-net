@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.OData;
 using Microsoft.AspNetCore.OData.Batch;
 using Microsoft.AspNetCore.OData.Query.Expressions;
 using Microsoft.EntityFrameworkCore;
+using LibraryService.Annotations;
 
 // Regenerates db/01-schema.sql from the mapping in LibraryContext and exits. Run it after changing the
 // model - the schema is SQL the database applies on its own, but it is not written by hand, because then
@@ -36,7 +37,10 @@ connectionString ??= ownedDatabase!.GetConnectionString();
 // of work, and each sub-request of a $batch gets its own too.
 builder.Services.AddDbContext<LibraryContext>(options => options.UseNpgsql(connectionString));
 
-builder.Services.AddControllers().AddOData(options =>
+// Applies the managed-property annotations the model publishes to every delta-shaped write, so that a
+// PATCH carrying a computed or immutable value ignores it rather than storing it - see
+// IgnoreManagedPropertiesFilter. Global on purpose: a controller cannot forget it.
+builder.Services.AddControllers(mvc => mvc.Filters.Add<IgnoreManagedPropertiesFilter>()).AddOData(options =>
     options
         // The query binders have to go into the *per-route* container: OData resolves its query
         // components from there, not from the application's service provider. Registered globally they are

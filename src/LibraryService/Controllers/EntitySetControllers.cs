@@ -3,11 +3,13 @@ using Library.Circulation;
 using LibraryService.Data;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.OData.Deltas;
+using Microsoft.AspNetCore.OData.Extensions;
 using Microsoft.AspNetCore.OData.Formatter;
 using Microsoft.AspNetCore.OData.Query;
 using Microsoft.AspNetCore.OData.Results;
 using Microsoft.AspNetCore.OData.Routing.Controllers;
 using Microsoft.EntityFrameworkCore;
+using LibraryService.Annotations;
 
 namespace LibraryService.Controllers;
 
@@ -75,6 +77,10 @@ public class MediaController(LibraryContext db) : ODataController
 
     public IActionResult Post([FromBody] Medium medium)
     {
+        // A computed property is the server's on insert as much as on update, so a value the client sent
+        // goes no further than here - the delta filter does the same for PATCH, which binds no entity.
+        medium.IgnoreManagedOnInsert(HttpContext.ODataFeature().Model);
+
         if (medium.Id == Guid.Empty)
         {
             medium.Id = Guid.NewGuid();
@@ -376,6 +382,8 @@ public class MembersController(LibraryContext db) : ODataController
 
     public IActionResult Post([FromBody] Member member)
     {
+        member.IgnoreManagedOnInsert(HttpContext.ODataFeature().Model);
+
         // Same as on Media: an id document or a nested loan's copy may be bound rather than nested, and
         // that is only decidable from the body - see NavigationBinding.Resolve.
         if (!NavigationBinding.Resolve(db, Request, member))
@@ -518,6 +526,9 @@ public class MembersController(LibraryContext db) : ODataController
         }
 
         member.Id = key;
+        // A PUT replaces the entity, but not the properties the client may not change: the spec exempts
+        // them from the reset an omission otherwise causes, so they keep the value that is stored.
+        member.IgnoreManagedOnUpdate(existing, HttpContext.ODataFeature().Model);
         db.Entry(existing).CurrentValues.SetValues(member);
         existing.Address = member.Address;
         existing.PreviousAddresses = member.PreviousAddresses;

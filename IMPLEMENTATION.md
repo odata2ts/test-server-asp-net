@@ -478,6 +478,49 @@ attributed to the tick storage, and survived its removal unchanged.
 
 ## Controllers
 
+### Enforcing the managed-property annotations
+
+Publishing `Core.Computed`, `Core.Immutable` or `Core.Permissions` and then storing whatever a client
+sends makes the metadata a lie, and a generated client the first casualty: it leaves such a property out
+of its payload precisely because we declared it managed.
+
+**The specification says ignore, not reject** (Protocol 11.4.3): "Key and other properties marked as
+read-only in metadata (including computed properties) [...] can be omitted from the request. If the
+request contains a value for one of these properties, the service MUST ignore that value when applying
+the update." A `400` would be a deviation of its own, so nothing here answers one.
+
+`ManagedProperties` reads the answer off the built `IEdmModel` rather than off the CLR attributes, so
+enforcement and `$metadata` cannot drift apart - they are the same declaration. Which properties are
+closed depends on the verb, because the terms do:
+
+| Term                            | `POST` | `PATCH` / `PUT` |
+| ------------------------------- | :----: | :-------------: |
+| `Core.Computed`                 | closed | closed          |
+| `Core.Permissions` sans `Write` | closed | closed          |
+| `Core.Immutable`                | open   | closed          |
+| `Core.ComputedDefaultValue`     | open   | open            |
+
+Two mechanisms, because the payloads arrive in two shapes.
+
+**`PATCH` goes through a global filter.** `IgnoreManagedPropertiesFilter` strips the closed names out of
+`Delta<T>.UpdatableProperties` before the action runs - "when the list is modified, any modified
+properties that were removed from the list are no longer considered to be changed", so `Patch()` simply
+passes them by. Registered once in `Program.cs`, which means a controller cannot forget it and a new one
+is covered without knowing any of this exists. It reaches into the closed generic by reflection, cached
+per delta type: `UpdatableProperties` sits on `Delta<T>` rather than on `IDelta`, and a filter sees its
+arguments as `object`.
+
+**`POST` and `PUT` bind the whole entity**, so there is no set of changed properties to narrow - every
+slot arrives filled, whether the client wrote it or not. "Ignore" then means something different for
+each, and only the action knows it, because only the action holds the stored entity:
+`IgnoreManagedOnInsert` clears the property so the server supplies it, `IgnoreManagedOnUpdate` copies the
+stored value back over it so a replace leaves it standing. The latter is what the spec asks for anyway -
+"Missing non-key, *updatable* structural properties [...] MUST be set to their default values" exempts
+exactly these from the reset a `PUT` otherwise performs.
+
+Keys are not in the table although 11.4.3 covers them in the same sentence: they come from the route, and
+the controllers already assign them from it.
+
 ### Creating a copy: the hand-written parser
 
 `POST /Copies` reads the payload itself rather than through `[FromBody] Delta<Copy>`, because the OData
