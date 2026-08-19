@@ -2,9 +2,14 @@ name: Publish Image
 
 # Publishes the runnable test server to the GitHub Container Registry.
 #
-# Consumers pull `ghcr.io/odata2ts/test-server-asp-net:latest` and start it as a throwaway container - see
-# odata2ts/odata2ts, int-test/cap. `latest` therefore has to keep working: every push to main republishes
-# it, so the image never lags behind the model it is supposed to serve.
+# Consumers pin an exact version - `ghcr.io/odata2ts/test-server-asp-net:0.1.0` - and start it as a
+# throwaway container; see odata2ts/odata2ts, int-test/asp-net. `latest` is still republished from every
+# push to main for ad-hoc use, but nothing automated consumes it any more.
+#
+# release-please runs as a job here rather than this workflow being triggered by the tag it pushes:
+# GitHub does not start workflows from events made with GITHUB_TOKEN, so that tag would build nothing.
+# Running it first also means a released commit is built exactly once, carrying `latest` and the version
+# tags on one image, instead of two builds producing two digests for identical source.
 
 # The branch is not pinned by name on purpose. A hardcoded name means the workflow silently stops
 # firing the day the default branch is renamed - which is exactly what happened here, the default was
@@ -12,7 +17,6 @@ name: Publish Image
 # comparing against the repository's actual default branch - see the `if:` below.
 on:
   push:
-    tags: ["v*"]
     branches: ["**"]
   workflow_dispatch:
 
@@ -22,12 +26,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  publish:
-    # Publish from the default branch and from version tags only. Feature branches skip immediately.
+  # Opens and maintains the release PR; merging that PR makes the next run of this job cut the release
+  # and hand the version to `publish` below. Runs on the default branch only, so on every other branch
+  # it is skipped - which is why `publish` tests `result != 'failure'` instead of relying on `needs:`
+  # alone, a skipped dependency would otherwise skip the publish too.
+  release:
     if: >-
-      github.ref_type == 'tag' ||
-      github.ref_name == github.event.repository.default_branch ||
-      github.event_name == 'workflow_dispatch'
+      github.event_name == 'push' &&
+      github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      released: ${{ steps.release.outputs.releases_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # release-please reads the whole history to work out the next version
+
+      - id: release
+        uses: googleapis/release-please-action@v5.0.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  publish:
+    needs: release
+    # Publish from the default branch only. Feature branches skip immediately.
+    if: >-
+      !cancelled() && needs.release.result != 'failure' &&
+      (github.ref_name == github.event.repository.default_branch ||
+      github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -50,12 +82,13 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
-          # `latest` only from the default branch; a version tag additionally yields 1.2.3 / 1.2 / 1
+          # `latest` only from the default branch; a run that cut a release additionally yields
+          # 0.1.0 / 0.1 / 0, read from the release job rather than from the git ref
           tags: |
             type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=semver,pattern={{version}},value=${{ needs.release.outputs.tag_name }},enable=${{ needs.release.outputs.released == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.release.outputs.tag_name }},enable=${{ needs.release.outputs.released == 'true' }}
+            type=semver,pattern={{major}},value=${{ needs.release.outputs.tag_name }},enable=${{ needs.release.outputs.released == 'true' }}
             type=sha,format=short
             type=raw,value=latest,enable={{is_default_branch}}
 

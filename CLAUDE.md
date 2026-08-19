@@ -21,8 +21,11 @@ docker run --rm -p 4004:4004 ghcr.io/odata2ts/test-server-asp-net:latest
 
 The published image is the intended way to consume the server: nothing to compose, mount, migrate or wait
 for, a restart is a reset. It carries its own PostgreSQL, so the single-container contract holds — do not
-break it by splitting the database out. `latest` is republished from every push to `main`, a version tag
-additionally yields `1.2.3`, `1.2` and `1`; images are smoke-tested before they are pushed. Locally
+break it by splitting the database out. `latest` is republished from every push to `main`; releases are
+cut by release-please, and merging its release PR additionally publishes `0.1.0`, `0.1` and `0`.
+Automated consumers pin an exact version — `odata2ts/int-test/asp-net` does, with Renovate raising a PR
+there per release, so a server change reaches the integration tests as a reviewable step rather than
+silently. Images are smoke-tested before they are pushed. Locally
 instead (.NET 10 SDK + Docker): `dotnet run --project src/LibraryService` on
 <http://localhost:5091/odata/v4/library/> — with no connection string it starts its own Postgres.
 
