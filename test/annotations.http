@@ -130,10 +130,13 @@ GET {{host}}/Media({{audiobook}})/Library.Catalog.Audiobook/Chapters(1)/$value
 ###############################################################################
 # Constraint terms - the seeded data satisfies every one of them
 #
-# None of them is *enforced*: they describe the model to a client reading
-# $metadata, and the runtime does not read them. That is the ⚠️ in
-# FEATURE-COVERAGE.md, and it is the same for Core.Computed and Core.Immutable.
-# What these requests show is that the claims are true of the data.
+# None of the *validation* terms is enforced: they describe the model to a
+# client reading $metadata, and the runtime does not read them. That is the ⚠️
+# in FEATURE-COVERAGE.md. What these requests show is that the claims are true
+# of the data.
+#
+# The managed-property terms are the exception - Core.Computed, Core.Immutable
+# and Core.Permissions *are* enforced, in the section below.
 ###############################################################################
 
 ### 200 - Validation.Pattern="^[0-9]{13}$" on PrintMedium/ISBN: 9783518188002,
@@ -165,13 +168,83 @@ GET {{host}}/Media/Library.Catalog.Audiobook?$select=Duration
 GET {{host}}/Media(66666666-6666-6666-6666-666666666666)
 
 ### 200 - Measures.ISOCurrency="EUR" on Member/Balance: 12.50 and 0.00.
-### Core.Permissions=Read on the same property is not enforced - a PATCH
-### writing Balance is accepted, see limitations.http.
+### Core.Permissions=Read on the same property *is* enforced - see below.
 GET {{host}}/Members?$select=Balance
 
 ### 200 - Core.AdditionalProperties on CollectorsItem: the type is open, and
 ### Appraisal and Insured are the undeclared properties it carries
 GET {{host}}/Media({{collectorsItem}})
+
+###############################################################################
+# Managed properties are enforced
+#
+# The spec leaves no room here (Protocol 11.4.3): "Key and other properties
+# marked as read-only in metadata (including computed properties) [...] can be
+# omitted from the request. If the request contains a value for one of these
+# properties, the service MUST ignore that value when applying the update."
+#
+# So the value is dropped, not rejected - a 400 would be a deviation of its own.
+# Which is exactly why a generated client leaves such a property out of the
+# payload: nothing in the response tells a caller the value went nowhere.
+#
+# See ../IMPLEMENTATION.md - one global filter for the delta-shaped writes, and
+# a helper for POST/PUT, which bind the whole entity and have nothing to narrow.
+###############################################################################
+
+### 204 - Core.Immutable on Loan/LoanedAt: the PATCH carries a new LoanedAt and
+### a new DueDate. Only DueDate is applied.
+PATCH {{host}}/Loans(88888888-8888-8888-8888-888888888888)
+Content-Type: application/json
+
+{
+  "LoanedAt": "2020-01-01T00:00:00Z",
+  "DueDate": "2026-12-01"
+}
+
+### 200 - LoanedAt is still 2026-06-01T10:00:00Z, DueDate is 2026-12-01
+GET {{host}}/Loans(88888888-8888-8888-8888-888888888888)
+
+### 201 - Core.Computed on Medium/PopularityScore: sent as 99, stored as null.
+### The server generates this one on insert and update alike, so there is no
+### operation in which a client value counts.
+POST {{host}}/Media
+Content-Type: application/json
+
+{
+  "@odata.type": "#Library.Catalog.Book",
+  "Title": "Computed Probe",
+  "Language": "de",
+  "PageCount": 10,
+  "AgeRating": 0,
+  "ISBN": "9780000009901",
+  "PopularityScore": 99
+}
+
+### 201 - Core.Permissions=Read on Member/Balance: sent as 999, stored as 0.
+### Read-only is read-only on insert too, not only on update.
+POST {{host}}/Members
+Content-Type: application/json
+
+{
+  "Name": "Permissions Probe",
+  "PreviousAddresses": [],
+  "Balance": 999
+}
+
+### 204 - PUT replaces the entity, and the properties a client may not write
+### keep their stored value rather than being reset. The spec exempts exactly
+### these from the reset an omission otherwise causes.
+PUT {{host}}/Members(2)
+Content-Type: application/json
+
+{
+  "Name": "Bob Beispiel Renamed",
+  "PreviousAddresses": [],
+  "Balance": 777
+}
+
+### 200 - Name took, Balance is still 0.00
+GET {{host}}/Members(2)?$select=Name,Balance
 
 ###############################################################################
 # Capabilities: the four <OnDelete Action="Cascade"/> match what the database

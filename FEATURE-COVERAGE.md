@@ -158,21 +158,24 @@ Every option below is translated to SQL by EF Core, not applied in memory.
 ## Vocabulary annotations
 
 All seven the reference model declares are emitted, and **62 more of this server's own** - see *Annotations
-beyond the reference model* below. What none of them do is change what the runtime accepts - that is the
-library's position rather than this server's.
+beyond the reference model* below. Most of them do not change what the runtime accepts; the
+managed-property terms are the exception, and are enforced.
 
 | Term                                                | result | out-of-the-box | impl | Notes |
 | --------------------------------------------------- | :----: | :------------: | :--: | ----- |
 | `Core.AlternateKeys`                                | ✅ | ✔ | ✔ | the only one that is also *effective*: the key is addressable |
 | `Capabilities.SearchRestrictions`                   | ✅ | ✔ |   | emitted on `Container/Media` as in the reference model |
 | `Core.OptimisticConcurrency`                        | ⚠️ |   | ✔ | emitted, `@odata.etag` in the payload, enforced by the database on `UPDATE` - but `If-Match` is never read. Derived from EF's fluent `IsConcurrencyToken()`, which the library cannot see |
-| `Core.Computed` (`Medium/PopularityScore`)          | ⚠️ | ✔ |   | emitted, never enforced: a `PATCH` setting it answers 204 and the value is applied |
-| `Core.Immutable` (`Loan/LoanedAt`)                  | ⚠️ | ✔ |   | same - the value is neither dropped nor rejected, and the client is told nothing |
-| `Core.ComputedDefaultValue` (`Member/ActiveSince`)  | ⚠️ | ✔ |   | same |
-| `Core.Permissions` (`Member/Balance`)               | ⚠️ |   | ✔ | correct shape only because the annotation is emitted directly - see below |
+| `Core.Computed` (`Medium/PopularityScore`)          | ✅ | ✔ | ✔ | emitted **and** enforced: a value sent on insert or update is ignored, per Protocol 11.4.3 |
+| `Core.Immutable` (`Loan/LoanedAt`)                  | ✅ | ✔ | ✔ | same, for updates only - the client may still supply it on insert, which is what the term says |
+| `Core.ComputedDefaultValue` (`Member/ActiveSince`)  | ✅ | ✔ |   | nothing to enforce: the term says the client may supply a value whenever it likes |
+| `Core.Permissions` (`Member/Balance`)               | ✅ |   | ✔ | enforced as read-only; correct *shape* only because the annotation is emitted directly - see below |
 
-The four managed-property terms are left unenforced deliberately: they describe an intent to a client that
-reads `$metadata`, and what this document is for is recording that the runtime does not share it.
+The managed-property terms are enforced because a reference server that publishes them and then ignores
+them is worse than one that never published them: a client generated from this `$metadata` leaves such a
+property out of its payload precisely because we said it is managed. The specification settles what
+"enforced" means, and it is *ignore*, not *reject* - see IMPLEMENTATION.md for the mechanism and
+`test/annotations.http` for the requests.
 
 **`Core.Permissions` is the one term the model builder cannot shape correctly.** It is typed
 `Core.Permission` - an enum - so its value belongs on the annotation itself, not in a record. Every
@@ -219,8 +222,8 @@ every `Core.AcceptableMediaTypes` matches the `Content-Type` the stream actually
 same entity as `/Members(1)`, which the reference model never asks about.
 
 Constraint terms are **declarative only** - `Validation.Maximum` does not make the service refuse a larger
-value, exactly as `Core.Computed` does not make it refuse a write. That is the same ⚠️ as the managed
-property terms above, and the reason the seed is checked against them instead.
+value. Unlike the managed-property terms above, which are enforced, nothing reads these at runtime, which
+is the reason the seed is checked against them instead.
 
 `Community.UrlEscapeFunction` is the one vocabulary left unused: it says a function may be called without
 its name, which no operation in this model does, and a term stating a behaviour the server does not have
