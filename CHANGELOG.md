@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/odata2ts/test-server-asp-net/compare/v0.2.0...v0.2.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* let a client delete a branch it created ([05aef95](https://github.com/odata2ts/test-server-asp-net/commit/05aef9558db15e850457cb7b5c5532a6534f9ab5))
+
 ## [0.2.0](https://github.com/odata2ts/test-server-asp-net/compare/v0.1.0...v0.2.0) (2026-08-20)
 
 
