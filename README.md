@@ -67,10 +67,11 @@ The published image is the intended way to consume this server:
 docker run --rm -p 4004:4004 ghcr.io/odata2ts/test-server-asp-net:latest
 ```
 
-`latest` is republished from every push to `main`. Releases are cut by release-please: merging its
-release PR tags the commit and additionally publishes `0.1.0`, `0.1` and `0`. Automated consumers pin
-an exact version rather than `latest` - odata2ts does, and Renovate raises a PR there for each new
-release. The image is smoke-tested before it is pushed.
+`latest` is republished from every push to `main`. Releases are cut by release-please, and the image a
+release ships is built while its release PR is open, pushed as `:rc` and smoke-tested there. Merging the
+release PR only re-tags that manifest as `0.2.1`, `0.2`, `0` and `latest`, which takes seconds and ships
+exactly the artifact that was tested. The release then dispatches to odata2ts, where a PR raising the
+pinned version opens straight away.
 
 ### Locally
 
