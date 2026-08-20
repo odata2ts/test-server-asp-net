@@ -28,11 +28,12 @@
 # The document
 ###############################################################################
 
-### 200 - 69 annotations over 24 terms of 4 vocabularies. Every one of the value
+### 200 - 78 annotations over 24 terms of 4 vocabularies. Every one of the value
 ### shapes CSDL knows for a constant appears, and each is the shape the term's
 ### declared type calls for - which is what the emitter is for:
 ###
-###   Bool         Core.Computed, Core.Immutable, Core.AdditionalProperties
+###   Bool         Core.Computed (nine of them the generated keys), Core.Immutable,
+###                Core.AdditionalProperties
 ###   String       Core.Description, Measures.Unit, Validation.Pattern
 ###   Int          Validation.MaxItems, Measures.Scale, Validation.Minimum (Edm.Byte)
 ###   Float        Validation.Minimum/Maximum on Medium/PopularityScore (Edm.Double)
@@ -245,6 +246,68 @@ Content-Type: application/json
 
 ### 200 - Name took, Balance is still 0.00
 GET {{host}}/Members(2)?$select=Name,Balance
+
+###############################################################################
+# Keys: nine generated, two assigned by the client
+#
+# Nothing in CSDL says which of the two a key is - the reference model leaves
+# them bare on purpose and lets each implementation state its own truth. Here
+# the database owns every key but two, so those nine carry Core.Computed and
+# are enforced like any other computed property.
+#
+# What stays bare is the counter-example: Branch.Id, a code the organisation
+# allocates, and Copy's composite key, where the client picks the medium and
+# the inventory number. A generated client can therefore tell a key it must
+# supply from one it must not.
+###############################################################################
+
+### 201 - Branch.Id is the client's: sent as 42, stored as 42
+POST {{host}}/Branches
+Content-Type: application/json
+
+{
+  "Id": 42,
+  "Name": "Client Assigned Branch",
+  "LowestFloor": 0,
+  "Population": 1000
+}
+
+### 400 - and it is not optional: without the key there is nothing to store it
+### under, since no generator stands behind it
+POST {{host}}/Branches
+Content-Type: application/json
+
+{
+  "Name": "No Key"
+}
+
+### 409 - nor may it collide with one already taken
+POST {{host}}/Branches
+Content-Type: application/json
+
+{
+  "Id": 42,
+  "Name": "Duplicate"
+}
+
+### 201 - Medium.Id is the database's: the Guid sent here is discarded and the
+### stored one is generated. Core.Computed says so, and since managed
+### properties are enforced the annotation is what makes it true.
+POST {{host}}/Media
+Content-Type: application/json
+
+{
+  "@odata.type": "#Library.Catalog.Book",
+  "Id": "12121212-1212-1212-1212-121212121212",
+  "Title": "Key Probe",
+  "Language": "de",
+  "PageCount": 1,
+  "AgeRating": 0,
+  "ISBN": "9780000009902"
+}
+
+### 200 - empty: nothing was stored under the Guid the client chose
+GET {{host}}/Media?$filter=Id eq 12121212-1212-1212-1212-121212121212
 
 ###############################################################################
 # Capabilities: the four <OnDelete Action="Cascade"/> match what the database

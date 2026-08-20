@@ -17,6 +17,8 @@
  */
 
 const { spawn, spawnSync } = require("node:child_process");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const { collectionFiles } = require("./requests");
@@ -114,18 +116,25 @@ async function runFile(file, serviceUrl) {
   try {
     await waitUntilServing(serviceUrl);
 
+    // Into a file rather than through a pipe. httpyac ends with process.exit(), and a Node write to a
+    // pipe is asynchronous - so the tail of a large report is simply lost, which looks exactly like a
+    // failing file because the JSON no longer parses. Writes to a file descriptor are synchronous.
+    const reportFile = path.join(os.tmpdir(), `httpyac-${process.pid}-${path.basename(file)}.json`);
+    const handle = fs.openSync(reportFile, "w");
+
     const output = await new Promise((resolve, reject) => {
       const httpyac = spawn(
         process.execPath,
         [require.resolve("httpyac/bin/httpyac.js"), "send", "--all", "--json", path.relative(ROOT, file)],
-        { cwd: ROOT, stdio: ["ignore", "pipe", "inherit"] },
+        { cwd: ROOT, stdio: ["ignore", handle, "inherit"] },
       );
 
-      let stdout = "";
-      httpyac.stdout.on("data", (chunk) => (stdout += chunk));
       httpyac.on("error", reject);
-      httpyac.on("close", () => resolve(stdout));
-    });
+      httpyac.on("close", () => {
+        fs.closeSync(handle);
+        resolve(fs.readFileSync(reportFile, "utf8"));
+      });
+    }).finally(() => fs.rmSync(reportFile, { force: true }));
 
     return report(output);
   } finally {

@@ -630,6 +630,32 @@ public class BranchesController(LibraryContext db) : ODataController
     [EnableQuery]
     public SingleResult<Branch> Get([FromRoute] int key) =>
         SingleResult.Create(db.Branches.AsNoTracking().Where(b => b.Id == key));
+
+    /// <summary>
+    /// The one create in this service where the *client* supplies the key. A branch code is allocated by
+    /// the organisation, so `Branch.Id` carries no managed annotation and arrives in the payload - unlike
+    /// every other key here, which is generated and annotated `Core.Computed`.
+    ///
+    /// Which makes this the counter-example the reference model asks for: a generated client can demand
+    /// the key on create for this entity and leave it out for all the others, and only a request that
+    /// actually stores what was sent proves the distinction is real.
+    /// </summary>
+    public IActionResult Post([FromBody] Branch branch)
+    {
+        if (branch.Id == 0)
+        {
+            return BadRequest("Branch.Id is assigned by the client and must be supplied.");
+        }
+
+        if (db.Branches.Any(b => b.Id == branch.Id))
+        {
+            return Conflict($"A branch with id {branch.Id} already exists.");
+        }
+
+        db.Branches.Add(branch);
+        db.SaveChanges();
+        return Created(branch);
+    }
 }
 
 public class BookmobilesController(LibraryContext db) : ODataController

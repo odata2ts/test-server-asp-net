@@ -76,7 +76,7 @@ module.exports = {
       // requests below it; these two guard against the emitter losing a whole group unnoticed.
       assert: ({ text, assert }) => {
         const { count, terms } = annotations(text);
-        assert.equal(count, 69);
+        assert.equal(count, 78);
         assert.equal(terms.size, 24);
       },
     },
