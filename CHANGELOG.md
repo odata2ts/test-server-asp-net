@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0](https://github.com/odata2ts/test-server-asp-net/compare/v0.1.0...v0.2.0) (2026-08-20)
+
+
+### Features
+
+* annotate the generated keys and let the client assign Branch ([f896c46](https://github.com/odata2ts/test-server-asp-net/commit/f896c46fabee7640bd4d4174c89e85bb10694c35))
+* enforce the managed-property annotations ([341c476](https://github.com/odata2ts/test-server-asp-net/commit/341c476795e4b112e1d99a13ae33fee97f57c6f9))
+
 ## 0.1.0 (2026-08-19)
 
 
