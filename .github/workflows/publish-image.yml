@@ -53,6 +53,16 @@ jobs:
       released: ${{ steps.release.outputs.releases_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
+      # release-please opens the release PR as this app rather than as GITHUB_TOKEN. A pull request
+      # authored by GITHUB_TOKEN does not start workflows - its runs sit at `action_required` waiting to
+      # be approved by hand - so `build` below would never produce the `:rc` the release then promotes,
+      # and merging would tag a version with no image behind it.
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ vars.ODATA2TS_PR_BOT_APP_ID }}
+          private-key: ${{ secrets.ODATA2TS_PR_BOT_PRIVATE_KEY }}
+
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # release-please reads the whole history to work out the next version
@@ -62,7 +72,7 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
 
   # Builds and pushes the image: from the default branch as `latest`/`main`/`sha-*`, and from an open
   # release PR as `:rc`. Not on a release merge - `promote` re-tags the candidate instead of rebuilding.
