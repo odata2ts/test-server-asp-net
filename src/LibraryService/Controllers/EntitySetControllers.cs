@@ -656,6 +656,25 @@ public class BranchesController(LibraryContext db) : ODataController
         db.SaveChanges();
         return Created(branch);
     }
+
+    /// <summary>
+    /// The counterpart of the create above, and not optional: a set a client can add to but never remove
+    /// from leaves every consumer's store dirty for the rest of its run. The integration tests share one
+    /// container across a package, so a branch created by one test was still there for the next, which is
+    /// how this gap announced itself.
+    /// </summary>
+    public IActionResult Delete([FromRoute] int key)
+    {
+        var existing = db.Branches.FirstOrDefault(b => b.Id == key);
+        if (existing is null)
+        {
+            return NotFound();
+        }
+
+        db.Branches.Remove(existing);
+        db.SaveChanges();
+        return NoContent();
+    }
 }
 
 public class BookmobilesController(LibraryContext db) : ODataController
