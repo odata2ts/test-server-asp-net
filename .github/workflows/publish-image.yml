@@ -129,8 +129,14 @@ jobs:
           # `promote` copies the manifest as it is, so the labels the candidate carries are the ones the
           # released image ends up with - hence the real version here instead of metadata-action's
           # default, which would say "rc". Blank outside a release PR, and an empty line is ignored.
+          #
+          # The run id rides along for the same reason the version does: `promote` runs in a different
+          # workflow run than the build, and the captured `$metadata` it publishes lives in this run's
+          # artifacts. Reading it off the manifest ties the metadata to the very image being promoted,
+          # rather than to a branch name that could have been rebuilt in the meantime.
           labels: |
             ${{ steps.version.outputs.version && format('org.opencontainers.image.version={0}', steps.version.outputs.version) || '' }}
+            ${{ steps.version.outputs.version && format('io.odata2ts.metadata.run-id={0}', github.run_id) || '' }}
 
       - name: Build the image
         uses: docker/build-push-action@v7
@@ -144,19 +150,37 @@ jobs:
       # A published image that does not actually serve the model is worse than none, so the image is
       # smoke-tested before it is pushed - including one operation, since routing those is where an
       # ASP.NET Core OData service breaks first.
-      - name: Smoke-test the image
+      #
+      # The `$metadata` is kept rather than discarded: odata2ts generates its client from a committed
+      # snapshot of it, and this container is the artifact being released, so what it serves here is by
+      # construction the metadata of that artifact. Nothing is started for the sake of reading it - see
+      # `promote`, which publishes the file, and odata2ts' bump-test-server.yml, which consumes it.
+      - name: Smoke-test the image and capture its metadata
         run: |
+          mkdir -p metadata
           docker run -d --name verify -p 4004:4004 test-server-asp-net:verify
           for i in $(seq 1 60); do
             curl -sfS http://localhost:4004/odata/v4/library/ > /dev/null && break
             sleep 2
           done
-          curl -sfS 'http://localhost:4004/odata/v4/library/$metadata' > /dev/null
+          curl -sfS 'http://localhost:4004/odata/v4/library/$metadata' -o metadata/library.xml
           curl -sfS 'http://localhost:4004/odata/v4/library/Media?$top=1' > /dev/null
           count=$(curl -sfS 'http://localhost:4004/odata/v4/library/TotalMediaCount()' | grep -o '"value":[0-9]*')
           echo "TotalMediaCount -> $count"
           test -n "$count"
           docker rm -f verify
+          # a truncated or error document would sail through `curl -f`, and only surface as a broken
+          # client generation in odata2ts weeks later
+          grep -q '</edmx:Edmx>' metadata/library.xml
+
+      # Only for a release candidate: `promote` is the only consumer, and it only ever runs for a release.
+      - name: Keep the metadata for the release
+        if: startsWith(github.head_ref, 'release-please--')
+        uses: actions/upload-artifact@v4
+        with:
+          name: metadata
+          path: metadata/
+          if-no-files-found: error
 
       - name: Push the image
         uses: docker/build-push-action@v6
@@ -175,6 +199,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       packages: write
+      # attaching the metadata to the release, and reading it back out of the build run's artifacts
+      contents: write
+      actions: read
 
     steps:
       - uses: docker/setup-buildx-action@v4
@@ -187,6 +214,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Promote the release candidate
+        id: promote
         env:
           IMAGE: ghcr.io/${{ github.repository }}
           TAG_NAME: ${{ needs.release.outputs.tag_name }}
@@ -205,6 +233,11 @@ jobs:
             exit 1
           fi
 
+          # The build run that produced this very manifest, and therefore holds the `$metadata` it
+          # served. Empty for a candidate built before this label existed, which the next step tolerates.
+          echo "metadata-run-id=$(docker buildx imagetools inspect "$IMAGE:rc" \
+            --format '{{ index .Image.Config.Labels "io.odata2ts.metadata.run-id" }}')" >> "$GITHUB_OUTPUT"
+
           major="${version%%.*}"
           minor="${version#*.}"
           minor="${minor%%.*}"
@@ -219,6 +252,30 @@ jobs:
             "$IMAGE:rc"
 
           echo "Published $version from the candidate." >> "$GITHUB_STEP_SUMMARY"
+
+      # The `$metadata` the candidate served, attached to the release the image was just published for.
+      # odata2ts downloads it into int-test/asp-net/resource/ when it raises its pin, so its client is
+      # generated from the metadata of the server it is then tested against - see
+      # odata2ts/.github/workflows/bump-test-server.yml.
+      #
+      # A missing artifact is not fatal: the image is the product, this is a convenience on top, and a
+      # candidate built before the label existed simply has none. odata2ts then keeps the snapshot it has.
+      - name: Attach the metadata to the release
+        if: steps.promote.outputs.metadata-run-id != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # promote does not check the repository out, so gh has no git remote to infer it from
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ needs.release.outputs.tag_name }}
+          RUN_ID: ${{ steps.promote.outputs.metadata-run-id }}
+        run: |
+          set -euo pipefail
+          if ! gh run download "$RUN_ID" --name metadata --dir metadata; then
+            echo "::warning::No metadata artifact on run $RUN_ID - the release keeps the image only."
+            exit 0
+          fi
+          gh release upload "$TAG_NAME" metadata/*.xml --clobber
+          echo "Attached $(ls metadata | tr '\n' ' ')to $TAG_NAME." >> "$GITHUB_STEP_SUMMARY"
 
   # Tells odata2ts to raise its pin. A push rather than odata2ts polling, so the PR exists within seconds
   # of the release - and it has to come from the app rather than GITHUB_TOKEN, or the integration tests
