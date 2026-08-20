@@ -19,6 +19,11 @@ concurrency:
 
 jobs:
   requests:
+    # Not on a release PR: it carries the version bump and the changelog on top of a main that already
+    # passed this, and publish-image.yml builds and smoke-tests the very image that release ships.
+    # A job-level condition rather than a filter on `on:`, so the check still reports as skipped instead
+    # of never appearing - which is what a required status check would need.
+    if: ${{ !startsWith(github.head_ref, 'release-please--') }}
     runs-on: ubuntu-latest
 
     steps:

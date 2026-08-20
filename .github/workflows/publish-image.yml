@@ -2,14 +2,23 @@ name: Publish Image
 
 # Publishes the runnable test server to the GitHub Container Registry.
 #
-# Consumers pin an exact version - `ghcr.io/odata2ts/test-server-asp-net:0.1.0` - and start it as a
+# Consumers pin an exact version - `ghcr.io/odata2ts/test-server-asp-net:0.2.1` - and start it as a
 # throwaway container; see odata2ts/odata2ts, int-test/asp-net. `latest` is still republished from every
 # push to main for ad-hoc use, but nothing automated consumes it any more.
 #
 # release-please runs as a job here rather than this workflow being triggered by the tag it pushes:
 # GitHub does not start workflows from events made with GITHUB_TOKEN, so that tag would build nothing.
-# Running it first also means a released commit is built exactly once, carrying `latest` and the version
-# tags on one image, instead of two builds producing two digests for identical source.
+#
+# A release is built once, while its release PR is open, and merging only re-tags it:
+#
+#   release PR opens -> `build` pushes the image as `:rc`, labelled with the version being released
+#   release PR merges -> `promote` re-tags that very manifest as 0.2.1 / 0.2 / 0 / latest / main / sha-*
+#
+# `promote` moves no layers - `imagetools create` copies the manifest registry-side - so publishing is a
+# few seconds rather than a full build, and what ships is the artifact the release PR already smoke-tested.
+# A single fixed `:rc` tag rather than one per version, because GITHUB_TOKEN cannot delete GHCR package
+# versions and only one release PR is ever open at a time; `promote` checks the candidate's version label
+# to be sure the tag holds the release it is about to publish.
 
 # The branch is not pinned by name on purpose. A hardcoded name means the workflow silently stops
 # firing the day the default branch is renamed - which is exactly what happened here, the default was
@@ -18,6 +27,8 @@ name: Publish Image
 on:
   push:
     branches: ["**"]
+  pull_request:
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 concurrency:
@@ -53,13 +64,20 @@ jobs:
           manifest-file: .release-please-manifest.json
           token: ${{ secrets.GITHUB_TOKEN }}
 
-  publish:
+  # Builds and pushes the image: from the default branch as `latest`/`main`/`sha-*`, and from an open
+  # release PR as `:rc`. Not on a release merge - `promote` re-tags the candidate instead of rebuilding.
+  #
+  # On a pull request this builds the *merge ref*, main with the PR applied, which is exactly what the
+  # squash merge will produce - so the candidate is the release, not an approximation of it.
+  build:
     needs: release
-    # Publish from the default branch only. Feature branches skip immediately.
+    # Feature branches skip immediately; so does the release merge, which promotes instead.
     if: >-
       !cancelled() && needs.release.result != 'failure' &&
+      needs.release.outputs.released != 'true' &&
       (github.ref_name == github.event.repository.default_branch ||
-      github.event_name == 'workflow_dispatch')
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.head_ref, 'release-please--'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -67,6 +85,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+
+      # The version this image will be published as, read from the release PR's own manifest. That file
+      # is the one release-please updates whatever the release-type is, so this works unchanged in the
+      # sibling server repos. Empty outside a release PR, which leaves the label at its default.
+      - name: Read the version being released
+        id: version
+        if: startsWith(github.head_ref, 'release-please--')
+        run: echo "version=$(jq -r '.["."]' .release-please-manifest.json)" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v4
 
@@ -82,15 +108,19 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
-          # `latest` only from the default branch; a run that cut a release additionally yields
-          # 0.1.0 / 0.1 / 0, read from the release job rather than from the git ref
+          # A release PR yields the single `:rc` tag and nothing else; the default branch yields
+          # `main`, `sha-*` and `latest`. The version tags are not made here at all - `promote` puts
+          # them on this very manifest once the release PR is merged.
           tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}},value=${{ needs.release.outputs.tag_name }},enable=${{ needs.release.outputs.released == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.release.outputs.tag_name }},enable=${{ needs.release.outputs.released == 'true' }}
-            type=semver,pattern={{major}},value=${{ needs.release.outputs.tag_name }},enable=${{ needs.release.outputs.released == 'true' }}
-            type=sha,format=short
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=rc,enable=${{ startsWith(github.head_ref, 'release-please--') }}
+            type=ref,event=branch,enable=${{ github.event_name != 'pull_request' }}
+            type=sha,format=short,enable=${{ github.event_name != 'pull_request' }}
+            type=raw,value=latest,enable=${{ github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch }}
+          # `promote` copies the manifest as it is, so the labels the candidate carries are the ones the
+          # released image ends up with - hence the real version here instead of metadata-action's
+          # default, which would say "rc". Blank outside a release PR, and an empty line is ignored.
+          labels: |
+            ${{ steps.version.outputs.version && format('org.opencontainers.image.version={0}', steps.version.outputs.version) || '' }}
 
       - name: Build the image
         uses: docker/build-push-action@v7
@@ -126,3 +156,84 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
+
+  # The release itself: re-tag the candidate the release PR already built and smoke-tested. No build, no
+  # layer transfer - `imagetools create` copies the manifest inside the registry.
+  promote:
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+
+    steps:
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote the release candidate
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          TAG_NAME: ${{ needs.release.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG_NAME#v}"
+
+          # The candidate is a moving tag, so make sure it holds this release and not a stale build -
+          # main moving while the release PR was open makes release-please regenerate the branch, and a
+          # merge racing that rebuild would otherwise publish the wrong bits. Read registry-side, so
+          # nothing is pulled.
+          built=$(docker buildx imagetools inspect "$IMAGE:rc" \
+            --format '{{ index .Image.Config.Labels "org.opencontainers.image.version" }}')
+          if [ "$built" != "$version" ]; then
+            echo "::error::The release candidate is built for $built, but $version is being released."
+            exit 1
+          fi
+
+          major="${version%%.*}"
+          minor="${version#*.}"
+          minor="${minor%%.*}"
+
+          docker buildx imagetools create \
+            --tag "$IMAGE:$version" \
+            --tag "$IMAGE:$major.$minor" \
+            --tag "$IMAGE:$major" \
+            --tag "$IMAGE:latest" \
+            --tag "$IMAGE:main" \
+            --tag "$IMAGE:sha-$(echo "$GITHUB_SHA" | cut -c1-7)" \
+            "$IMAGE:rc"
+
+          echo "Published $version from the candidate." >> "$GITHUB_STEP_SUMMARY"
+
+  # Tells odata2ts to raise its pin. A push rather than odata2ts polling, so the PR exists within seconds
+  # of the release - and it has to come from the app rather than GITHUB_TOKEN, or the integration tests
+  # would never run on the PR it opens, which is the entire point of opening one.
+  notify-odata2ts:
+    needs: [release, promote]
+    if: needs.release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ vars.ODATA2TS_PR_BOT_APP_ID }}
+          private-key: ${{ secrets.ODATA2TS_PR_BOT_PRIVATE_KEY }}
+          owner: odata2ts
+          repositories: odata2ts
+
+      - name: Ask odata2ts to run against the new server
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG_NAME: ${{ needs.release.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          gh api repos/odata2ts/odata2ts/dispatches \
+            --field event_type=test-server-released \
+            --field 'client_payload[server]=asp-net' \
+            --field "client_payload[version]=${TAG_NAME#v}"
