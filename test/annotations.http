@@ -290,6 +290,13 @@ Content-Type: application/json
   "Name": "Duplicate"
 }
 
+### 204 - and it can be removed again. A set a client can add to but never remove
+### from leaves every consumer's store dirty for the rest of its run.
+DELETE {{host}}/Branches(42)
+
+### 404 - gone, so the same id is free again
+GET {{host}}/Branches(42)
+
 ### 201 - Medium.Id is the database's: the Guid sent here is discarded and the
 ### stored one is generated. Core.Computed says so, and since managed
 ### properties are enforced the annotation is what makes it true.
