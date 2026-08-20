@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/odata2ts/test-server-asp-net/compare/v0.2.1...v0.2.2) (2026-08-20)
+
+
+### Bug Fixes
+
+* do not read a multipart $batch body as requests of its own ([#22](https://github.com/odata2ts/test-server-asp-net/issues/22)) ([dee468d](https://github.com/odata2ts/test-server-asp-net/commit/dee468db71466f982006f1e81bec1664b4796699))
+
 ## [0.2.1](https://github.com/odata2ts/test-server-asp-net/compare/v0.2.0...v0.2.1) (2026-08-20)
 
 
