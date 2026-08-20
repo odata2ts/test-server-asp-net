@@ -24,10 +24,14 @@ const ANNOTATION = /^###(\s|$)/;
 const STATUS = /^###\s+(\d{3})\b\s*-?\s*(.*)$/;
 
 /**
- * A request line. Only recognised at the start of a line, which is what keeps the `"method": "get"` of a
- * `$batch` body and the JSON of every other body out of the result.
+ * A request line. Only recognised at the start of a line, and only outside a request body - see
+ * `parseRequests`. Anchoring alone is not enough: a *multipart* `$batch` states its parts as
+ * `GET Books?$top=1 HTTP/1.1` at column zero, which is indistinguishable from a request of its own.
  */
 const REQUEST_LINE = /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+\S/;
+
+/** A variable definition, `@host = ...`. Ends a body, since nothing of a request follows it. */
+const VARIABLE = /^@\w/;
 
 /**
  * @typedef {object} RequestBlock
@@ -46,17 +50,30 @@ const REQUEST_LINE = /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+\S/;
  * A block is a run of `###` lines immediately above a request line. Anything else - the file header, the
  * section banners, the `@variable` definitions - is not a block and is ignored.
  *
+ * Request bodies are skipped rather than scanned. A body starts at the blank line after a request line
+ * and runs until the next `###` block or `@variable`, and nothing inside it can open a request - which is
+ * what keeps the parts of a multipart `$batch` from being read as requests of their own. httpyac draws the
+ * same boundary, so the blocks here stay aligned with the regions it reports.
+ *
  * @param {string} file
  * @returns {RequestBlock[]}
  */
 function parseRequests(file) {
   const lines = fs.readFileSync(file, "utf8").split(/\r?\n/);
   const blocks = [];
+  let inBody = false;
 
   for (let i = 0; i < lines.length; i++) {
-    if (!REQUEST_LINE.test(lines[i])) {
+    if (ANNOTATION.test(lines[i]) || VARIABLE.test(lines[i])) {
+      inBody = false;
+    }
+
+    if (inBody || !REQUEST_LINE.test(lines[i])) {
       continue;
     }
+
+    // Everything from the blank line after this request until the next block is its body.
+    inBody = true;
 
     let start = i;
     while (start > 0 && ANNOTATION.test(lines[start - 1])) {
