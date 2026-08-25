@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/odata2ts/test-server-asp-net/compare/v0.2.3...v0.2.4) (2026-08-25)
+
+
+### Build System
+
+* re-cut the current server as 0.2.4 ([bcb5c19](https://github.com/odata2ts/test-server-asp-net/commit/bcb5c191f2c010bf28dd3e080b5165ba8e3c5ad3))
+
 ## [0.2.3](https://github.com/odata2ts/test-server-asp-net/compare/v0.2.2...v0.2.3) (2026-08-25)
 
 
