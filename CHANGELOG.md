@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/odata2ts/test-server-asp-net/compare/v0.2.2...v0.2.3) (2026-08-25)
+
+
+### Bug Fixes
+
+* enforce the optimistic concurrency Copies announces ([#27](https://github.com/odata2ts/test-server-asp-net/issues/27)) ([de734d9](https://github.com/odata2ts/test-server-asp-net/commit/de734d93e1628416eb1bd6374a42af209894fafe))
+
 ## [0.2.2](https://github.com/odata2ts/test-server-asp-net/compare/v0.2.1...v0.2.2) (2026-08-20)
 
 
