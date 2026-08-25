@@ -13,6 +13,11 @@ name: Publish Image
 #
 #   release PR opens -> `build` pushes the image as `:rc`, labelled with the version being released
 #   release PR merges -> `promote` re-tags that very manifest as 0.2.1 / 0.2 / 0 / latest / main / sha-*
+#                        and publishes the release that until then was a draft
+#
+# That draft is not cosmetic. A published GitHub release is immutable, so the `$metadata` asset has to be
+# attached before it goes public - and a `promote` that dies half-way then leaves an unpublished draft
+# and no tag at all, instead of a version whose metadata never arrived.
 #
 # `promote` moves no layers - `imagetools create` copies the manifest registry-side - so publishing is a
 # few seconds rather than a full build, and what ships is the artifact the release PR already smoke-tested.
@@ -67,6 +72,8 @@ jobs:
         with:
           fetch-depth: 0 # release-please reads the whole history to work out the next version
 
+      # The release is created as a draft - `draft: true` in release-please-config.json - and `promote`
+      # publishes it once the image and its metadata are in place.
       - id: release
         uses: googleapis/release-please-action@v5.0.0
         with:
@@ -258,6 +265,9 @@ jobs:
       # generated from the metadata of the server it is then tested against - see
       # odata2ts/.github/workflows/bump-test-server.yml.
       #
+      # The release is still a draft at this point, and has to be: GitHub refuses to add assets to a
+      # published release. The next step publishes it.
+      #
       # A missing artifact is not fatal: the image is the product, this is a convenience on top, and a
       # candidate built before the label existed simply has none. odata2ts then keeps the snapshot it has.
       - name: Attach the metadata to the release
@@ -276,6 +286,16 @@ jobs:
           fi
           gh release upload "$TAG_NAME" metadata/*.xml --clobber
           echo "Attached $(ls metadata | tr '\n' ' ')to $TAG_NAME." >> "$GITHUB_STEP_SUMMARY"
+
+      # Image and metadata are in place, so the release goes public - and only here does the tag come
+      # into existence, because GitHub creates a draft's tag when it is published. Unconditional: a
+      # release without metadata still has to ship, it is the image that is being released.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ needs.release.outputs.tag_name }}
+        run: gh release edit "$TAG_NAME" --draft=false --latest
 
   # Tells odata2ts to raise its pin. A push rather than odata2ts polling, so the PR exists within seconds
   # of the release - and it has to come from the app rather than GITHUB_TOKEN, or the integration tests
