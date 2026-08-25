@@ -58,12 +58,11 @@ The **protocol and operation surface is reproduced completely**: all 20 entity t
 including both overload pairs, which is the part most implementations lose. Every query option the
 reference model reaches translates to SQL.
 
-What is **not** covered comes down to eight things, seven of them not this implementation's choice: three
+What is **not** covered comes down to seven things, six of them not this implementation's choice: three
 pieces of CSDL the model builder has no API for (`TypeDefinition`, `Unicode`, and every `OnDelete` action
 except `Cascade`), the `geo.*` functions and `$filter`/`$orderby` over an open type's dynamic properties
-(both the storage layer's price), the `If-Match` precondition, which no part of the stack enforces, and the
-library's projection, which both fails to truncate a `$compute=date(...)` and breaks outright on a
-date-part function over a nullable property.
+(both the storage layer's price), and the library's projection, which both fails to truncate a
+`$compute=date(...)` and breaks outright on a date-part function over a nullable property.
 
 Only one is this implementation's own: a contained collection answers 200 with an empty result for a
 parent that does not exist, where the spec wants 404.
@@ -128,7 +127,7 @@ as GeoJSON including `"crs": {"name": "EPSG:4326"}`.
 | `$batch` (JSON)                                     | ✅ | ✔ |   | each sub-request its own unit of work |
 | Query options in the body (`POST <resource>/$query`) | ✅ | ✔ |   | `UseODataQueryRequest()` must sit *before* `UseRouting()`, else 405 |
 | Error when a query option fails to translate        | ⚠️ |   | ✔ | the library streams a 200 and truncates the body mid-payload; a buffering middleware turns it into an honest 500 |
-| `If-Match` / 412 precondition                       | ❌ |   |   | `@odata.etag` is emitted and the database enforces the token on `UPDATE`, but no layer reads the request header |
+| `If-Match` / 412 precondition                       | ✅ |   | ✔ | the framework emits `@odata.etag` and EF puts the token in the `UPDATE`, but neither reads the request header - the entity is re-read before every write, so the token in the `WHERE` clause is always current and can never lose. The controller compares it explicitly: 428 without a precondition, 412 with a stale one |
 
 ## Query options
 
