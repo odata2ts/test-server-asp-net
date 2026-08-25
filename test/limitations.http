@@ -142,22 +142,6 @@ GET {{host}}/Media?$filter=Appraisal gt 1000
 GET {{host}}/Media/Library.Catalog.Audiobook?$filter=totalseconds(Duration) gt 100
 
 ###############################################################################
-# This implementation: the HTTP preconditions are not enforced
-#
-# Copy/Condition is annotated Core.OptimisticConcurrency, is emitted as
-# @odata.etag, and EF puts the original value into the WHERE of every UPDATE -
-# so two writers racing on one copy do collide. The HTTP half is missing: the
-# controllers never read If-Match.
-###############################################################################
-
-### 204 - a stale ETag is accepted; 412 is never returned
-PATCH {{host}}/Copies(MediumId={{book}},InventoryNumber=1)
-Content-Type: application/json
-If-Match: W/"AAAA"
-
-{ "Condition": 5 }
-
-###############################################################################
 # This implementation: addressing gaps
 ###############################################################################
 

@@ -113,11 +113,13 @@ Content-Type: application/json
 ### 204 - PATCH does go through Delta<T>
 PATCH {{host}}/Copies(MediumId={{book}},InventoryNumber=99)
 Content-Type: application/json
+If-Match: *
 
 { "Condition": 3 }
 
 ### 204
 DELETE {{host}}/Copies(MediumId={{book}},InventoryNumber=99)
+If-Match: *
 
 ###############################################################################
 # Deep insert
@@ -191,6 +193,7 @@ GET {{host}}/Copies(MediumId={{book}},InventoryNumber=98)/Location
 ### 204 - re-pointed with the 4.01 notation
 PATCH {{host}}/Copies(MediumId={{book}},InventoryNumber=98)
 Content-Type: application/json
+If-Match: *
 
 { "Location": { "@id": "{{host}}/Branches(1)" } }
 
@@ -200,6 +203,7 @@ GET {{host}}/Copies(MediumId={{book}},InventoryNumber=98)/Location
 ### 204 - binding to null clears the link
 PATCH {{host}}/Copies(MediumId={{book}},InventoryNumber=98)
 Content-Type: application/json
+If-Match: *
 
 { "Location@odata.bind": null }
 
@@ -208,6 +212,7 @@ GET {{host}}/Copies(MediumId={{book}},InventoryNumber=98)/Location
 
 ### 204
 DELETE {{host}}/Copies(MediumId={{book}},InventoryNumber=98)
+If-Match: *
 
 ### 201 - a deep insert and a binding in one payload: the copy is created with
 ### the book, the branch it names already exists. Add() tracks the whole graph
@@ -309,3 +314,45 @@ GET {{host}}/Members(2)
 
 ### 404 - deleting twice
 DELETE {{host}}/Members(2)
+
+###############################################################################
+# Optimistic concurrency
+#
+# Copy/Condition is annotated Core.OptimisticConcurrency and emitted as
+# @odata.etag, and the controllers compare what the client sends back. The
+# writes above state `If-Match: *` because they are about something else; these
+# are about the precondition itself.
+###############################################################################
+
+### 201 - a copy of its own, so that rewriting its token disturbs nothing else
+POST {{host}}/Copies
+Content-Type: application/json
+
+{ "MediumId": "11111111-1111-1111-1111-111111111111", "InventoryNumber": 97, "Condition": 1 }
+
+### 428 - a write without any precondition is refused
+PATCH {{host}}/Copies(MediumId={{book}},InventoryNumber=97)
+Content-Type: application/json
+
+{ "Condition": 3 }
+
+### 412 - a token that cannot be current is refused
+PATCH {{host}}/Copies(MediumId={{book}},InventoryNumber=97)
+Content-Type: application/json
+If-Match: W/"AAAA"
+
+{ "Condition": 3 }
+
+### 204 - a star matches whatever is current
+PATCH {{host}}/Copies(MediumId={{book}},InventoryNumber=97)
+Content-Type: application/json
+If-Match: *
+
+{ "Condition": 3 }
+
+### 428 - a delete is a write like any other
+DELETE {{host}}/Copies(MediumId={{book}},InventoryNumber=97)
+
+### 204
+DELETE {{host}}/Copies(MediumId={{book}},InventoryNumber=97)
+If-Match: *

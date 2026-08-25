@@ -188,6 +188,11 @@ public class CopiesController(LibraryContext db) : ODataController
             return NotFound();
         }
 
+        if (CheckConcurrency(existing) is { } precondition)
+        {
+            return precondition;
+        }
+
         var boundBranchId = NavigationBinding.Read(Request, nameof(Copy.Location), NavigationBinding.AsInt);
         var clearsBranch = NavigationBinding.ClearsLink(Request, nameof(Copy.Location));
 
@@ -256,6 +261,46 @@ public class CopiesController(LibraryContext db) : ODataController
         return Created(copy);
     }
 
+    /// <summary>
+    /// Enforces the optimistic concurrency this entity set announces.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>Core.OptimisticConcurrency</c> in the EDM is a promise, and declaring the token to EF Core is not
+    /// enough to keep it: the entity is loaded fresh before every write, so the original value EF puts into
+    /// the <c>WHERE</c> clause is always the current one and the update can never lose. Without this check
+    /// a stale <c>If-Match</c> was accepted, which is worse than not announcing the feature - a client that
+    /// probes for the announcement concludes it is protected when it is not.
+    /// </para>
+    /// <para>
+    /// Returns 428 where the client sent no precondition at all and 412 where it sent one that is no longer
+    /// current; <c>If-Match: *</c> matches anything by definition (OData V4.01 Part 1, §8.2.1). The current
+    /// token is built through the framework's own ETag handler, so it is compared against exactly the value
+    /// the same handler emitted on the read.
+    /// </para>
+    /// </remarks>
+    private IActionResult? CheckConcurrency(Copy existing)
+    {
+        var ifMatch = Request.Headers.IfMatch.ToString();
+        if (string.IsNullOrWhiteSpace(ifMatch))
+        {
+            return StatusCode(StatusCodes.Status428PreconditionRequired);
+        }
+        if (ifMatch.Trim() == "*")
+        {
+            return null;
+        }
+
+        var current = Request.GetETagHandler()
+            .CreateETag(new Dictionary<string, object?> { [nameof(Copy.Condition)] = existing.Condition })
+            .ToString();
+
+        // a client may offer several tokens; the request succeeds if any of them is current
+        return ifMatch.Split(',').Any(candidate => candidate.Trim() == current)
+            ? null
+            : StatusCode(StatusCodes.Status412PreconditionFailed);
+    }
+
     /// <summary>Deletes a copy. Routed explicitly for the same reason as the other composite-key routes.</summary>
     [HttpDelete("odata/v4/library/Copies(MediumId={keyMediumId},InventoryNumber={keyInventoryNumber})")]
     public IActionResult Delete([FromRoute] Guid keyMediumId, [FromRoute] int keyInventoryNumber)
@@ -263,6 +308,11 @@ public class CopiesController(LibraryContext db) : ODataController
         if (Find(db, keyMediumId, keyInventoryNumber) is not { } existing)
         {
             return NotFound();
+        }
+
+        if (CheckConcurrency(existing) is { } precondition)
+        {
+            return precondition;
         }
 
         db.Copies.Remove(existing);
