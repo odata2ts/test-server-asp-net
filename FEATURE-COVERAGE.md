@@ -125,6 +125,9 @@ as GeoJSON including `"crs": {"name": "EPSG:4326"}`.
 | `@odata.bind` and `{"@id": …}`, incl. binding to null | ✅ |   | ✔ | routing a binding through `Delta<T>` corrupts the store - read from the raw body instead; on a create the bound stub is `Add`ed with the graph and has to be swapped for the stored entity first |
 | Delta payloads (OData 4.01)                         | ✅ | ✔ |   | update, removal and upsert in one request, delta response |
 | `$batch` (JSON)                                     | ✅ | ✔ |   | each sub-request its own unit of work |
+| `$batch` request references `$<id>` in the URL      | ✅ | ✔ |   | valid in the first URL segment only; the library rewrites it against the previous sub-response's `Location` and validates it against the referring request's `dependsOn` at parse |
+| `$batch` request references in `@odata.bind` / `@id` | ✅ | ✔ |   | the same `$<id>` may name the previous sub-response from inside a sub-request's payload |
+| `$batch` reference nothing resolves                 | ⚠️ | ✔ |   | an unresolvable first-segment reference without a `dependsOn` covering it fails the whole batch with a 500 `ODataException` - no per-slot error |
 | Query options in the body (`POST <resource>/$query`) | ✅ | ✔ |   | `UseODataQueryRequest()` must sit *before* `UseRouting()`, else 405 |
 | Error when a query option fails to translate        | ⚠️ |   | ✔ | the library streams a 200 and truncates the body mid-payload; a buffering middleware turns it into an honest 500 |
 | `If-Match` / 412 precondition                       | ✅ |   | ✔ | the framework emits `@odata.etag` and EF puts the token in the `UPDATE`, but neither reads the request header - the entity is re-read before every write, so the token in the `WHERE` clause is always current and can never lose. The controller compares it explicitly: 428 without a precondition, 412 with a stale one |

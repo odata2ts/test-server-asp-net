@@ -127,6 +127,8 @@ public class Book : PrintMedium
     [Core.Description("Lowest age in years the book is released for; 0 means no restriction.")]
     public byte AgeRating { get; set; }
 
+    /// <summary>A plain, non-key referential constraint - the body-reference scenario binds this on insert.</summary>
+    public int? PublisherId { get; set; }
     public PublisherRegistry.Publisher? Publisher { get; set; }
 }
 

@@ -449,6 +449,24 @@ public class MembersController(LibraryContext db) : ODataController
     }
 
     /// <summary>
+    /// Bound navigation: a new loan for the member the route names. Where a resolved $batch URL
+    /// reference lands - <c>POST $1/Loans</c> in a batch rewrites to this route once request 1 has
+    /// created the member. The action name is the convention's for a write on a bound navigation,
+    /// <c>PostTo{NavigationPropertyName}</c>, not <c>Post{NavigationPropertyName}</c>.
+    /// </summary>
+    public IActionResult PostToLoans([FromRoute] int key, [FromBody] Loan loan)
+    {
+        if (db.Members.FirstOrDefault(m => m.Id == key) is not { } member)
+        {
+            return NotFound();
+        }
+
+        return LoanPost.Create(db, HttpContext, loan, member) is { } created
+            ? Created(created)
+            : BadRequest("A navigation binding in the request body names an entity that does not exist.");
+    }
+
+    /// <summary>
     /// Delta payload on the collection (OData 4.01): a mixed batch of upserts and removals in one
     /// request. Entries carrying <c>@removed</c> arrive as <see cref="DeltaDeletedResource{T}" />.
     /// </summary>
@@ -605,8 +623,54 @@ public class MembersController(LibraryContext db) : ODataController
     }
 }
 
+/// <summary>
+/// The write path for a new loan, shared by the collection <c>POST</c> and the bound navigation one on
+/// <see cref="MembersController" />, where the member comes from the route instead of the payload and
+/// wins over any binding the body brought.
+///
+/// The computed key is the server's on insert as much as on update, so a value the client sent goes no
+/// further than here. The member and the copy are existing entities, so a payload for <c>Loans</c>
+/// binds them in the 4.0 or the 4.01 notation rather than nesting them - there is no other way the
+/// references get filled.
+/// </summary>
+internal static class LoanPost
+{
+    /// <summary>Persists the loan and returns it, or <c>null</c> if a binding names an entity that does not exist.</summary>
+    public static Loan? Create(LibraryContext db, HttpContext context, Loan loan, Member? member = null)
+    {
+        loan.IgnoreManagedOnInsert(context.ODataFeature().Model);
+
+        if (loan.Id == Guid.Empty)
+        {
+            loan.Id = Guid.NewGuid();
+        }
+
+        if (member is { })
+        {
+            loan.Member = member;
+        }
+
+        if (!NavigationBinding.Resolve(db, context.Request, loan))
+        {
+            return null;
+        }
+
+        db.Loans.Add(loan);
+        db.SaveChanges();
+        return loan;
+    }
+}
+
 public class LoansController(LibraryContext db) : ODataController
 {
+    /// <summary>Creates a loan whose member and copy the payload binds to existing entities.</summary>
+    public IActionResult Post([FromBody] Loan loan)
+    {
+        return LoanPost.Create(db, HttpContext, loan) is { } created
+            ? Created(created)
+            : BadRequest("A navigation binding in the request body names an entity that does not exist.");
+    }
+
     [EnableQuery]
     public IQueryable<Loan> Get() => db.Loans.AsNoTracking();
 
@@ -753,6 +817,20 @@ public class PublishersController(LibraryContext db) : ODataController
     [EnableQuery]
     public IQueryable<Book> GetBooks([FromRoute] int key) =>
         db.Media.AsNoTracking().OfType<Book>().Where(b => b.Publisher != null && b.Publisher.Id == key);
+
+    /// <summary>
+    /// Creates a publisher. The key is the next free number, the same fixed sequence a consumer can
+    /// assert against as on <c>Members</c>; a value the client sends is discarded.
+    /// </summary>
+    public IActionResult Post([FromBody] PublisherRegistry.Publisher publisher)
+    {
+        publisher.Id = NextPublisherId();
+        db.Publishers.Add(publisher);
+        db.SaveChanges();
+        return Created(publisher);
+    }
+
+    private int NextPublisherId() => db.Publishers.Any() ? db.Publishers.Max(p => p.Id) + 1 : 1;
 }
 
 public class PublisherBranchesController(LibraryContext db) : ODataController
