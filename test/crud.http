@@ -255,6 +255,38 @@ Content-Type: application/json
 }
 
 ###############################################################################
+# Loans and publishers: the create endpoints the $batch reference scenarios land on
+###############################################################################
+
+### 201 - a loan's member and copy are bound, never nested: both are existing
+### entities, so there is no deep insert into Loans. The computed key is
+### generated here - a value the client sent is discarded.
+POST {{host}}/Loans
+Content-Type: application/json
+
+{
+  "LoanedAt": "2026-02-01T10:00:00Z",
+  "DueDate": "2026-02-15",
+  "Member@odata.bind": "{{host}}/Members(1)",
+  "Copy@odata.bind": "{{host}}/Copies(MediumId={{book}},InventoryNumber=1)"
+}
+
+### 201 - the bound navigation: the same create with the member named by the
+### route instead of the payload. This is where a resolved $batch URL reference
+### lands; the action is PostToLoans, the convention's write shape for a bound
+### navigation.
+POST {{host}}/Members(2)/Loans
+Content-Type: application/json
+
+{ "LoanedAt": "2026-02-01T10:00:00Z", "DueDate": "2026-02-15" }
+
+### 201 - Id is the next free number, as on Members; a value the client sends is discarded
+POST {{host}}/Publishers
+Content-Type: application/json
+
+{ "Name": "Rowohlt", "Country": "DE" }
+
+###############################################################################
 # The managed-property terms are declared but never enforced
 #
 # All four (Computed, Immutable, ComputedDefaultValue, Permissions) are emitted

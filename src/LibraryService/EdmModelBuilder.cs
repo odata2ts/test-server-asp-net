@@ -157,7 +157,10 @@ public static class EdmModelBuilder
         loan.HasRequired(l => l.Member!, null, m => m.Loans);
         loan.HasRequired(l => l.Copy!);
 
-        builder.EntityType<Book>().HasOptional(b => b.Publisher!, null, p => p.Books);
+        // A plain, non-key referential constraint on PublisherId - the body-reference scenario binds this on
+        // insert. Modeled on Copy->Medium's predicate constraint: a null constraint here would make it a
+        // deep-insert navigation instead, so the (dependent, principal) comparison is what declares the FK.
+        builder.EntityType<Book>().HasOptional(b => b.Publisher!, (b, p) => b.PublisherId == p.Id, p => p.Books);
 
         // --- publisher registry --------------------------------------------------------------------
         builder.EntityType<PublisherRegistry.Publisher>().HasKey(p => p.Id);

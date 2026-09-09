@@ -51,3 +51,70 @@ Content-Type: application/json
     { "id": "2", "method": "get", "url": "Members?$select=Id,Name", "dependsOn": ["1"] }
   ]
 }
+
+### 200 - URL reference: the second request's bare $1 is the first request's Location. The
+### library rewrites it, so the sub-request runs as POST Members(N)/Loans, the bound navigation
+### POST. The reference is valid in the first URL segment only.
+POST {{host}}/$batch
+Content-Type: application/json
+
+{
+  "requests": [
+    { "id": "1", "method": "post", "url": "Members",
+      "headers": { "content-type": "application/json" },
+      "body": { "Name": "Batch Referent", "ActiveSince": "2026-01-01T00:00:00Z", "Balance": 0 } },
+    { "id": "2", "method": "post", "url": "$1/Loans",
+      "headers": { "content-type": "application/json" },
+      "body": { "LoanedAt": "2026-02-01T10:00:00Z", "DueDate": "2026-02-15" },
+      "dependsOn": ["1"] }
+  ]
+}
+
+### 200 - body reference: the second request binds the just-created member in its payload, in the
+### 4.0 notation. The $1 in Member@odata.bind resolves the same way as in the URL.
+POST {{host}}/$batch
+Content-Type: application/json
+
+{
+  "requests": [
+    { "id": "1", "method": "post", "url": "Members",
+      "headers": { "content-type": "application/json" },
+      "body": { "Name": "Batch Bound", "ActiveSince": "2026-01-01T00:00:00Z", "Balance": 0 } },
+    { "id": "2", "method": "post", "url": "Loans",
+      "headers": { "content-type": "application/json" },
+      "body": { "LoanedAt": "2026-02-01T10:00:00Z", "DueDate": "2026-02-15", "Member@odata.bind": "$1" },
+      "dependsOn": ["1"] }
+  ]
+}
+
+### 200 - body reference on the constrained navigation: the publisher the second request binds is
+### created by the first. Book.PublisherId is the plain, non-key referential constraint the model
+### declares for it, and it is what the binding is written to.
+POST {{host}}/$batch
+Content-Type: application/json
+
+{
+  "requests": [
+    { "id": "1", "method": "post", "url": "Publishers",
+      "headers": { "content-type": "application/json" },
+      "body": { "Name": "Batch Verlag", "Country": "de" } },
+    { "id": "2", "method": "post", "url": "Media",
+      "headers": { "content-type": "application/json" },
+      "body": { "@odata.type": "#Library.Catalog.Book", "Title": "Batch Buch", "Language": "de", "ISBN": "9780000000100", "PageCount": 200, "Publisher@odata.bind": "$1" },
+      "dependsOn": ["1"] }
+  ]
+}
+
+### 500 - a reference nothing can resolve. Only in the first URL segment is the reference recognised
+### at all, and there the library validates it against the request's dependsOn: without one, the
+### whole batch fails with an ODataException - there is no per-slot error.
+POST {{host}}/$batch
+Content-Type: application/json
+
+{
+  "requests": [
+    { "id": "1", "method": "post", "url": "$999/Loans",
+      "headers": { "content-type": "application/json" },
+      "body": { "LoanedAt": "2026-02-01T10:00:00Z", "DueDate": "2026-02-15" } }
+  ]
+}

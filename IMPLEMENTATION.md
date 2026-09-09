@@ -30,12 +30,15 @@ collection-valued flavour - and one call sets `Partner` on both navigation prope
 ```csharp
 copy.HasRequired(c => c.Medium!, (c, m) => c.MediumId == m.Id, m => m.Copies);
 loan.HasRequired(l => l.Member!, null, m => m.Loans);
-builder.EntityType<Book>().HasOptional(b => b.Publisher!, null, p => p.Books);
+builder.EntityType<Book>().HasOptional(b => b.Publisher!, (b, p) => b.PublisherId == p.Id, p => p.Books);
 ```
 
-The referential constraint in the middle may be `null`, which is what makes the last two work: unlike
-`Copy/Medium`, those associations have no foreign key property in the reference model to constrain
-against. `OnDelete="Cascade"` on `Member/Loans` survives next to it.
+The referential constraint in the middle may be `null`, which is what makes `Loan/Member` work: unlike
+`Copy/Medium` or `Book/Publisher`, it has no foreign key property in the reference model to constrain
+against. `OnDelete="Cascade"` on `Member/Loans` survives next to it. `Book/Publisher` constrains against
+`PublisherId`, the plain, non-key referential constraint the model declares for it - a `null`
+constraint would make it a deep-insert navigation instead, and the body-reference scenario would no
+longer bind through it.
 
 ### Binding parameter names
 
@@ -260,6 +263,32 @@ A truncated body under a success status, which makes "this server cannot answer 
 from "no rows matched" - the one failure mode a server that exists to be asserted against must not have.
 `Program.cs` therefore buffers the response and turns an escaped exception into an honest `500`. It does
 not make anything translate; it only ensures a limit is visible.
+
+### `$batch` request references (`$<id>`)
+
+The reference mechanism is entirely the library's, at two different times, and the two do not agree about
+where a reference sits:
+
+- **At parse**, the batch reader recognises the reference only in the *first* URL segment - the position
+  the spec assigns it - and validates it against the referring request's *effective* `dependsOn`. An id
+  not covered there fails the whole batch with a `500` `ODataException`, before any sub-request runs -
+  `Request Id reference [999] in Uri [$999/Loans] is not found in effective depends-on-Ids [1] of the
+  request` - no per-slot error.
+- **At dispatch**, the sub-request URL and the `@odata.bind` / `@id` values of its payload are rewritten
+  by `ContentIdHelpers.ResolveContentId`, which takes the *first* `$<id>` wherever it sits in the URL.
+  `Members/$1/Loans` is rewritten and answered just like the spec form `$1/Loans`, even though the parser
+  above does not treat it as a reference and never validates it. A consumer must not lean on that
+  leniency: the first-segment form is the one the spec and the parse-time validation agree on.
+
+Once resolved, a URL reference is an ordinary request. `$1/Loans` behind a created member becomes
+`POST Members(N)/Loans`, the bound navigation, served by `MembersController.PostToLoans` - the
+convention for a write on a bound navigation is `PostTo{NavigationPropertyName}`; `Post{…}` matches no
+selector, and the route answers `405` with `Allow: GET`.
+
+A body reference needs no special handling: the `$1` inside `@odata.bind` or `@id` is resolved by the same
+`ResolveContentId` while the payload is deserialised, and the binding then goes through the ordinary
+`NavigationBinding.Resolve` path, which swaps the deserializer's stub for the stored entity - on
+`Book/Publisher` the link is then written to `PublisherId` through the referential constraint.
 
 ## Persistence
 
