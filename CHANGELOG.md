@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/odata2ts/test-server-asp-net/compare/v0.2.4...v0.3.0) (2026-09-09)
+
+
+### Features
+
+* batch request references land on writable loans and publishers ([#32](https://github.com/odata2ts/test-server-asp-net/issues/32)) ([a476a53](https://github.com/odata2ts/test-server-asp-net/commit/a476a53521a02a838f75cff6e36d2b211113932c))
+
 ## [0.2.4](https://github.com/odata2ts/test-server-asp-net/compare/v0.2.3...v0.2.4) (2026-08-25)
 
 
