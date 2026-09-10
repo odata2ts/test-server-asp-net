@@ -105,9 +105,10 @@ Content-Type: application/json
   ]
 }
 
-### 500 - a reference nothing can resolve. Only in the first URL segment is the reference recognised
-### at all, and there the library validates it against the request's dependsOn: without one, the
-### whole batch fails with an ODataException - there is no per-slot error.
+### 400 - a reference nothing can resolve. Only in the first URL segment is the reference recognised
+### at all, and there the library validates it against the request's dependsOn: without one, the document
+### is refused before any request is answered, so the whole batch fails - with the parser's message
+### verbatim and a 400, because the refusal is the client's doing. There is no per-slot error.
 POST {{host}}/$batch
 Content-Type: application/json
 
