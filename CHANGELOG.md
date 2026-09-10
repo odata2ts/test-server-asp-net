@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/odata2ts/test-server-asp-net/compare/v0.3.0...v0.3.1) (2026-09-10)
+
+
+### Bug Fixes
+
+* answer a batch the parser refuses with 400, not 500 ([c651f23](https://github.com/odata2ts/test-server-asp-net/commit/c651f23921a5525707e9495e9829a0e95c73bf5f))
+
 ## [0.3.0](https://github.com/odata2ts/test-server-asp-net/compare/v0.2.4...v0.3.0) (2026-09-09)
 
 
