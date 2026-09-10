@@ -297,6 +297,36 @@ jobs:
           TAG_NAME: ${{ needs.release.outputs.tag_name }}
         run: gh release edit "$TAG_NAME" --draft=false --latest
 
+  # `release` above already opened or updated the next release PR, but it did so before this very
+  # release existed as anything but a draft - and a draft's tag does not exist until `promote` publishes
+  # it, a few steps up. Unable to find it, release-please fell back to diffing against the last release
+  # it could see, several versions back, and produced a PR that repeats changes this release already
+  # shipped. Running it again now, with the tag finally real, lets it diff against the release that was
+  # actually just published.
+  refresh-release-pr:
+    needs: [release, promote]
+    if: needs.release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ vars.ODATA2TS_PR_BOT_APP_ID }}
+          private-key: ${{ secrets.ODATA2TS_PR_BOT_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # release-please reads the whole history to work out the next version
+
+      - uses: googleapis/release-please-action@v5.0.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          token: ${{ steps.app-token.outputs.token }}
+
   # Tells odata2ts to raise its pin. A push rather than odata2ts polling, so the PR exists within seconds
   # of the release - and it has to come from the app rather than GITHUB_TOKEN, or the integration tests
   # would never run on the PR it opens, which is the entire point of opening one.
