@@ -1,4 +1,5 @@
 using LibraryService;
+using LibraryService.Batch;
 using LibraryService.Data;
 using LibraryService.Query;
 using Microsoft.AspNetCore.OData;
@@ -53,7 +54,11 @@ builder.Services.AddControllers(mvc => mvc.Filters.Add<IgnoreManagedPropertiesFi
                 // Replaces the stock filter binder, which compares Edm.Date and Edm.TimeOfDay as
                 // arithmetic on their parts rather than as values - see DateComparisonBinder.
                 .AddSingleton<IFilterBinder, DateComparisonBinder>()
-                .AddSingleton<ODataBatchHandler, DefaultODataBatchHandler>())
+                // The stock handler lets a document the parser refuses leave the batch as an ODataException,
+                // and the error middleware below would answer that 500. The refusal is the client's doing, so
+                // LibraryBatchHandler turns it into a type the middleware answers 400, at the one place it can
+                // happen: the parse phase - see LibraryBatchHandler for why the type cannot be mapped there.
+                .AddSingleton<ODataBatchHandler, LibraryBatchHandler>())
         .Select()
         .Filter()
         .OrderBy()
@@ -102,18 +107,20 @@ app.Use(async (context, next) =>
     }
     catch (Exception exception)
     {
-        // A non-UTC timestamp is the client's doing, so it answers 400 - see UtcOnlyException. Everything
-        // else reaching this point is the server's, and stays a 500. EF wraps what a converter throws
-        // during SaveChanges, so the search has to go down the chain rather than look at the top only.
+        // A non-UTC timestamp is the client's doing, so it answers 400 - see UtcOnlyException. A batch the
+        // parser refused is the client's doing too - see BatchRequestParseException. Everything else
+        // reaching this point is the server's, and stays a 500. EF wraps what a converter throws during
+        // SaveChanges, so the search has to go down the chain rather than look at the top only.
         var utcOnly = Unwrap<UtcOnlyException>(exception);
+        var batchRefusal = Unwrap<BatchRequestParseException>(exception);
 
         context.Response.Clear();
-        context.Response.StatusCode = utcOnly is null
+        context.Response.StatusCode = utcOnly is null && batchRefusal is null
             ? StatusCodes.Status500InternalServerError
             : StatusCodes.Status400BadRequest;
         context.Response.ContentType = "application/json";
 
-        var reported = utcOnly ?? exception;
+        var reported = utcOnly ?? batchRefusal ?? exception;
         var payload = System.Text.Json.JsonSerializer.Serialize(
             new
             {

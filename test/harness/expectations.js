@@ -224,5 +224,19 @@ module.exports = {
         );
       },
     },
+    {
+      request: "POST {{host}}/$batch",
+      nth: 7,
+      // The status of the refusal is the annotation's; pinned here is that the 400 carries the parser's
+      // verdict, verbatim - a batch refused for the wrong reason, or reworded, would answer 400 all the
+      // same and take the client's message assertions down with it.
+      assert: ({ body, assert }) => {
+        assert.equal(body.error.code, "BatchRequestParseException");
+        assert.match(
+          body.error.message,
+          /Request Id reference \[999\] in Uri \[\$999\/Loans\] is not found in effective depends-on-Ids \[null\] of the request\./,
+        );
+      },
+    },
   ],
 };
