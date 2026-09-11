@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/odata2ts/test-server-asp-net/compare/v0.3.1...v0.4.0) (2026-09-11)
+
+
+### Features
+
+* serve a single entity reached through a to-many navigation property by key ([d96648e](https://github.com/odata2ts/test-server-asp-net/commit/d96648e0f39353e53b16264589c6c812f7d083d7))
+
+
+### Bug Fixes
+
+* **ci:** re-run release-please after promote to fix the draft-release race ([9d56535](https://github.com/odata2ts/test-server-asp-net/commit/9d565350198f141f00c0c9fae742e942126cb0d6))
+
 ## [0.3.1](https://github.com/odata2ts/test-server-asp-net/compare/v0.3.0...v0.3.1) (2026-09-10)
 
 
