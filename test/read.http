@@ -117,6 +117,10 @@ GET {{host}}/Media(ISBN='9783518188002')
 ### 200 - collection-valued
 GET {{host}}/Media({{book}})/Copies
 
+### 200 - a single copy reached through its medium, by its own composite key -
+### the same resource /Copies(...) addresses directly, over a different route
+GET {{host}}/Media({{book}})/Copies(MediumId={{book}},InventoryNumber=1)
+
 ### 200 - single-valued, across the schema boundary into PublisherRegistry
 GET {{host}}/Media({{book}})/Library.Catalog.Book/Publisher
 
@@ -146,6 +150,11 @@ GET {{host}}/Loans({{loan}})/Copy
 
 ### 200
 GET {{host}}/Publishers(1)/Books
+
+### 200 - a single book reached through its publisher, by its own key - the
+### illustrative case where the nav property's own name ("Books") diverges
+### from its target's entity set ("Media")
+GET {{host}}/Publishers(1)/Books({{book}})
 
 ###############################################################################
 # Containment

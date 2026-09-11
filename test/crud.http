@@ -122,6 +122,57 @@ DELETE {{host}}/Copies(MediumId={{book}},InventoryNumber=99)
 If-Match: *
 
 ###############################################################################
+# Nested nav-property routes: the same resource, addressed by a different
+# route than its own entity set - odata2ts's `canonicalKey` cache-key feature
+# depends on both routes actually being served.
+###############################################################################
+
+### 201 - a fresh copy for the nested route below
+POST {{host}}/Copies
+Content-Type: application/json
+
+{
+  "MediumId": "11111111-1111-1111-1111-111111111111",
+  "InventoryNumber": 96,
+  "Condition": 1,
+  "IsLoanable": true,
+  "Status": "Available",
+  "AcquisitionDate": "2026-01-01",
+  "WeightKg": 0.4,
+  "Location_": "A-96"
+}
+
+### 204 - patched through the medium the copy was reached from, not the
+### entity set directly - shares CopiesController's own concurrency check and
+### patch application, so both routes stay identical in what they accept
+PATCH {{host}}/Media({{book}})/Copies(MediumId={{book}},InventoryNumber=96)
+Content-Type: application/json
+If-Match: *
+
+{ "Condition": 3 }
+
+### 200 - Condition is 3, read straight back through the entity set: the
+### nested PATCH above reached the very same Copy
+GET {{host}}/Copies(MediumId={{book}},InventoryNumber=96)?$select=Condition
+
+### 204
+DELETE {{host}}/Copies(MediumId={{book}},InventoryNumber=96)
+If-Match: *
+
+### 204 - patched through the publisher, not the media set directly - needs no
+### @odata.type, unlike a direct /Media(id) patch: the route already narrows
+### to the concrete Book
+PATCH {{host}}/Publishers(1)/Books({{book}})
+Content-Type: application/json
+
+{ "AgeRating": 12 }
+
+### 200 - AgeRating is 12, read back through the same nested route - $select
+### resolves cleanly here since the route already narrows to the concrete
+### Book, unlike the abstract-typed Media set directly
+GET {{host}}/Publishers(1)/Books({{book}})?$select=AgeRating
+
+###############################################################################
 # Deep insert
 ###############################################################################
 
