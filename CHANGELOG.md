@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/odata2ts/test-server-asp-net/compare/v0.4.0...v0.5.0) (2026-09-11)
+
+
+### Features
+
+* serve a copy reached three hops deep through publisher and book ([7d5492e](https://github.com/odata2ts/test-server-asp-net/commit/7d5492ecb97330042a1bf0c1a28b804a9220f7d2))
+
 ## [0.4.0](https://github.com/odata2ts/test-server-asp-net/compare/v0.3.1...v0.4.0) (2026-09-11)
 
 
