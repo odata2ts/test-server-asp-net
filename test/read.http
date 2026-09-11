@@ -156,6 +156,11 @@ GET {{host}}/Publishers(1)/Books
 ### from its target's entity set ("Media")
 GET {{host}}/Publishers(1)/Books({{book}})
 
+### 200 - a single copy reached three hops deep: publisher, then its (name-
+### diverging) book, then the copy itself - the same resource /Copies(...)
+### and /Media({{book}})/Copies(...) each address by a shorter route
+GET {{host}}/Publishers(1)/Books({{book}})/Copies(MediumId={{book}},InventoryNumber=1)
+
 ###############################################################################
 # Containment
 ###############################################################################
