@@ -916,6 +916,60 @@ public class PublishersController(LibraryContext db) : ODataController
     }
 
     /// <summary>
+    /// A single copy reached three hops deep - publisher, then its book (<c>Books</c> diverging from its
+    /// entity set <c>Media</c>, same as <see cref="GetBook"/>), then the copy itself. Exercises the
+    /// statically-keyed-hop rename's own deferred follow-up (odata2ts#558): a write here must
+    /// deterministically invalidate not just the copy's direct route, but the *ancestor* book's direct
+    /// <c>Media(id)</c> route too - the book's own hop diverges from its entity set exactly as the
+    /// addressed resource does in <see cref="GetBook"/>/<see cref="PatchBook"/>, just one level further up.
+    /// </summary>
+    [HttpGet("odata/v4/library/Publishers({key})/Books({bookId})/Copies(MediumId={copyMediumId},InventoryNumber={copyInventoryNumber})")]
+    [EnableQuery]
+    public SingleResult<Copy> GetBookCopy(
+        [FromRoute] int key,
+        [FromRoute] Guid bookId,
+        [FromRoute] Guid copyMediumId,
+        [FromRoute] int copyInventoryNumber) =>
+        SingleResult.Create(
+            db.Copies.AsNoTracking()
+                .Where(c => c.MediumId == bookId
+                    && c.MediumId == copyMediumId
+                    && c.InventoryNumber == copyInventoryNumber
+                    && db.Media.OfType<Book>().Any(b => b.Id == bookId && b.Publisher != null && b.Publisher.Id == key)));
+
+    /// <summary>
+    /// Patches a copy reached three hops deep - the same resource <see cref="CopiesController.Patch"/> and
+    /// <see cref="MediaController.PatchCopy"/> address by shorter routes, so it shares their concurrency
+    /// check and patch application rather than risking a third implementation drifting apart.
+    /// </summary>
+    [HttpPatch("odata/v4/library/Publishers({key})/Books({bookId})/Copies(MediumId={copyMediumId},InventoryNumber={copyInventoryNumber})")]
+    public IActionResult PatchBookCopy(
+        [FromRoute] int key,
+        [FromRoute] Guid bookId,
+        [FromRoute] Guid copyMediumId,
+        [FromRoute] int copyInventoryNumber,
+        Delta<Copy>? delta)
+    {
+        if (bookId != copyMediumId || !db.Media.OfType<Book>().Any(b => b.Id == bookId && b.Publisher != null && b.Publisher.Id == key))
+        {
+            return NotFound();
+        }
+
+        var existing = CopiesController.Find(db, copyMediumId, copyInventoryNumber, q => q.Include(c => c.Location));
+        if (existing is null)
+        {
+            return NotFound();
+        }
+
+        if (CopiesController.CheckConcurrency(Request, existing) is { } precondition)
+        {
+            return precondition;
+        }
+
+        return CopiesController.ApplyPatch(db, Request, existing, delta) is { } badRequest ? badRequest : Updated(existing);
+    }
+
+    /// <summary>
     /// Creates a publisher. The key is the next free number, the same fixed sequence a consumer can
     /// assert against as on <c>Members</c>; a value the client sends is discarded.
     /// </summary>

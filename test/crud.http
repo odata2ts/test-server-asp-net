@@ -172,6 +172,40 @@ Content-Type: application/json
 ### Book, unlike the abstract-typed Media set directly
 GET {{host}}/Publishers(1)/Books({{book}})?$select=AgeRating
 
+### 201 - a fresh copy for the three-hop nested route below
+POST {{host}}/Copies
+Content-Type: application/json
+
+{
+  "MediumId": "11111111-1111-1111-1111-111111111111",
+  "InventoryNumber": 97,
+  "Condition": 1,
+  "IsLoanable": true,
+  "Status": "Available",
+  "AcquisitionDate": "2026-01-01",
+  "WeightKg": 0.4,
+  "Location_": "A-97"
+}
+
+### 204 - patched three hops deep: publisher, then its book (Books diverging
+### from its entity set Media, same as the two-hop route above), then the
+### copy itself - shares CopiesController's own concurrency check and patch
+### application, so all three routes to this same Copy stay identical in what
+### they accept
+PATCH {{host}}/Publishers(1)/Books({{book}})/Copies(MediumId={{book}},InventoryNumber=97)
+Content-Type: application/json
+If-Match: *
+
+{ "Condition": 3 }
+
+### 200 - Condition is 3, read straight back through the entity set: the
+### three-hop PATCH above reached the very same Copy
+GET {{host}}/Copies(MediumId={{book}},InventoryNumber=97)?$select=Condition
+
+### 204
+DELETE {{host}}/Copies(MediumId={{book}},InventoryNumber=97)
+If-Match: *
+
 ###############################################################################
 # Deep insert
 ###############################################################################
