@@ -62,6 +62,48 @@ public class MediaController(LibraryContext db) : ODataController
     public IQueryable<Copy> GetCopies([FromRoute] Guid key) =>
         db.Copies.AsNoTracking().Where(c => c.MediumId == key);
 
+    /// <summary>
+    /// A single copy reached through its medium, by its own composite key - routed explicitly for the same
+    /// reason as <see cref="CopiesController"/>'s own composite-key route.
+    /// </summary>
+    [HttpGet("odata/v4/library/Media({key})/Copies(MediumId={copyMediumId},InventoryNumber={copyInventoryNumber})")]
+    [EnableQuery]
+    public SingleResult<Copy> GetCopy([FromRoute] Guid key, [FromRoute] Guid copyMediumId, [FromRoute] int copyInventoryNumber) =>
+        SingleResult.Create(
+            db.Copies.AsNoTracking()
+                .Where(c => c.MediumId == key && c.MediumId == copyMediumId && c.InventoryNumber == copyInventoryNumber));
+
+    /// <summary>
+    /// Patches a copy reached through its medium - the same resource <see cref="CopiesController.Patch"/>
+    /// addresses directly, so it shares that method's concurrency check and patch application rather than
+    /// risking the two routes drifting apart.
+    /// </summary>
+    [HttpPatch("odata/v4/library/Media({key})/Copies(MediumId={copyMediumId},InventoryNumber={copyInventoryNumber})")]
+    public IActionResult PatchCopy(
+        [FromRoute] Guid key,
+        [FromRoute] Guid copyMediumId,
+        [FromRoute] int copyInventoryNumber,
+        Delta<Copy>? delta)
+    {
+        if (key != copyMediumId)
+        {
+            return NotFound();
+        }
+
+        var existing = CopiesController.Find(db, copyMediumId, copyInventoryNumber, q => q.Include(c => c.Location));
+        if (existing is null)
+        {
+            return NotFound();
+        }
+
+        if (CopiesController.CheckConcurrency(Request, existing) is { } precondition)
+        {
+            return precondition;
+        }
+
+        return CopiesController.ApplyPatch(db, Request, existing, delta) is { } badRequest ? badRequest : Updated(existing);
+    }
+
     [EnableQuery]
     public ActionResult<PublisherRegistry.Publisher> GetPublisherFromBook([FromRoute] Guid key) =>
         db.Media.OfType<Book>().Include(b => b.Publisher).FirstOrDefault(b => b.Id == key)?.Publisher is { } publisher
@@ -188,13 +230,24 @@ public class CopiesController(LibraryContext db) : ODataController
             return NotFound();
         }
 
-        if (CheckConcurrency(existing) is { } precondition)
+        if (CheckConcurrency(Request, existing) is { } precondition)
         {
             return precondition;
         }
 
-        var boundBranchId = NavigationBinding.Read(Request, nameof(Copy.Location), NavigationBinding.AsInt);
-        var clearsBranch = NavigationBinding.ClearsLink(Request, nameof(Copy.Location));
+        return ApplyPatch(db, Request, existing, delta) is { } badRequest ? badRequest : Updated(existing);
+    }
+
+    /// <summary>
+    /// Applies a Copy patch's delta and <c>Location</c> binding - shared with <see cref="MediaController"/>'s
+    /// nested <c>Media({key})/Copies(...)</c> route, which reaches this same resource by a different path
+    /// and must behave identically. Returns a <c>400</c> where neither the delta nor a binding could be
+    /// read, <c>null</c> on success (the caller already knows what "updated" looks like for its own route).
+    /// </summary>
+    internal static IActionResult? ApplyPatch(LibraryContext db, HttpRequest request, Copy existing, Delta<Copy>? delta)
+    {
+        var boundBranchId = NavigationBinding.Read(request, nameof(Copy.Location), NavigationBinding.AsInt);
+        var clearsBranch = NavigationBinding.ClearsLink(request, nameof(Copy.Location));
 
         // A body the deserializer refused - binding a navigation to null is one such case - arrives as a
         // null delta. That is only recoverable because the binding was read from the raw body: with no
@@ -202,7 +255,7 @@ public class CopiesController(LibraryContext db) : ODataController
         // that a silently skipped patch would have produced.
         if (delta is null && boundBranchId is null && !clearsBranch)
         {
-            return BadRequest("The request body could not be read as a Copy.");
+            return new BadRequestObjectResult("The request body could not be read as a Copy.");
         }
 
         // Keep the current link out of Patch's reach: a bound stub would be written into it.
@@ -216,7 +269,7 @@ public class CopiesController(LibraryContext db) : ODataController
             : clearsBranch ? null : currentLocation;
 
         db.SaveChanges();
-        return Updated(existing);
+        return null;
     }
 
     /// <summary>Navigation to the branch the copy is shelved at.</summary>
@@ -279,26 +332,31 @@ public class CopiesController(LibraryContext db) : ODataController
     /// the same handler emitted on the read.
     /// </para>
     /// </remarks>
-    private IActionResult? CheckConcurrency(Copy existing)
+    /// <summary>
+    /// <c>internal static</c>, not an instance method: <see cref="MediaController"/>'s own nested
+    /// <c>Media({key})/Copies(...)</c> routes enforce the same promise and have no <see cref="CopiesController"/>
+    /// instance of their own to call this on.
+    /// </summary>
+    internal static IActionResult? CheckConcurrency(HttpRequest request, Copy existing)
     {
-        var ifMatch = Request.Headers.IfMatch.ToString();
+        var ifMatch = request.Headers.IfMatch.ToString();
         if (string.IsNullOrWhiteSpace(ifMatch))
         {
-            return StatusCode(StatusCodes.Status428PreconditionRequired);
+            return new StatusCodeResult(StatusCodes.Status428PreconditionRequired);
         }
         if (ifMatch.Trim() == "*")
         {
             return null;
         }
 
-        var current = Request.GetETagHandler()
+        var current = request.GetETagHandler()
             .CreateETag(new Dictionary<string, object?> { [nameof(Copy.Condition)] = existing.Condition })
             .ToString();
 
         // a client may offer several tokens; the request succeeds if any of them is current
         return ifMatch.Split(',').Any(candidate => candidate.Trim() == current)
             ? null
-            : StatusCode(StatusCodes.Status412PreconditionFailed);
+            : new StatusCodeResult(StatusCodes.Status412PreconditionFailed);
     }
 
     /// <summary>Deletes a copy. Routed explicitly for the same reason as the other composite-key routes.</summary>
@@ -310,7 +368,7 @@ public class CopiesController(LibraryContext db) : ODataController
             return NotFound();
         }
 
-        if (CheckConcurrency(existing) is { } precondition)
+        if (CheckConcurrency(Request, existing) is { } precondition)
         {
             return precondition;
         }
@@ -817,6 +875,45 @@ public class PublishersController(LibraryContext db) : ODataController
     [EnableQuery]
     public IQueryable<Book> GetBooks([FromRoute] int key) =>
         db.Media.AsNoTracking().OfType<Book>().Where(b => b.Publisher != null && b.Publisher.Id == key);
+
+    /// <summary>
+    /// A single book reached through its publisher - the illustrative case where the nav property's own
+    /// name ("Books") diverges from its target's entity set ("Media"). Routed explicitly: the convention
+    /// only matches the collection form above, never a further key segment.
+    /// </summary>
+    [HttpGet("odata/v4/library/Publishers({key})/Books({bookId})")]
+    [EnableQuery]
+    public ActionResult<Book> GetBook([FromRoute] int key, [FromRoute] Guid bookId) =>
+        db.Media.AsNoTracking().OfType<Book>().FirstOrDefault(b => b.Id == bookId && b.Publisher != null && b.Publisher.Id == key) is
+        { } book
+            ? book
+            : NotFound();
+
+    /// <summary>
+    /// Patches a book reached through its publisher - the same resource a direct <c>/Media(id)</c> patch
+    /// addresses (see <see cref="MediaController.Patch"/>), just narrowed to the concrete, non-abstract
+    /// <see cref="Book"/> type already, so the payload needs no <c>@odata.type</c> discriminator here.
+    /// Book carries no <c>Core.OptimisticConcurrency</c> promise, so - like the direct route - there is no
+    /// concurrency check to share.
+    /// </summary>
+    [HttpPatch("odata/v4/library/Publishers({key})/Books({bookId})")]
+    public IActionResult PatchBook([FromRoute] int key, [FromRoute] Guid bookId, Delta<Book>? delta)
+    {
+        var existing = db.Media.OfType<Book>().Include(b => b.Publisher).FirstOrDefault(b => b.Id == bookId && b.Publisher != null && b.Publisher.Id == key);
+        if (existing is null)
+        {
+            return NotFound();
+        }
+
+        if (delta is null)
+        {
+            return BadRequest("The request body could not be read as a Book.");
+        }
+
+        delta.Patch(existing);
+        db.SaveChanges();
+        return Updated(existing);
+    }
 
     /// <summary>
     /// Creates a publisher. The key is the next free number, the same fixed sequence a consumer can
