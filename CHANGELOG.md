@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/odata2ts/test-server-asp-net/compare/v0.5.0...v0.6.0) (2026-09-15)
+
+
+### Features
+
+* serve a single entity reached through a type cast, in every verb ([#43](https://github.com/odata2ts/test-server-asp-net/issues/43)) ([8a18d25](https://github.com/odata2ts/test-server-asp-net/commit/8a18d25d3f33e9386646ba99f67e37efe560bb76))
+
 ## [0.5.0](https://github.com/odata2ts/test-server-asp-net/compare/v0.4.0...v0.5.0) (2026-09-11)
 
 
