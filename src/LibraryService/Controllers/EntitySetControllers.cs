@@ -50,6 +50,21 @@ public class MediaController(LibraryContext db) : ODataController
     public IQueryable<Book> GetFromBook() => db.Media.AsNoTracking().OfType<Book>();
 
     [EnableQuery]
+    public IQueryable<PrintMedium> GetFromPrintMedium() => db.Media.AsNoTracking().OfType<PrintMedium>();
+
+    [EnableQuery]
+    public IQueryable<Magazine> GetFromMagazine() => db.Media.AsNoTracking().OfType<Magazine>();
+
+    [EnableQuery]
+    public IQueryable<TradeJournal> GetFromTradeJournal() => db.Media.AsNoTracking().OfType<TradeJournal>();
+
+    [EnableQuery]
+    public IQueryable<AudioMedium> GetFromAudioMedium() => db.Media.AsNoTracking().OfType<AudioMedium>();
+
+    [EnableQuery]
+    public IQueryable<DVD> GetFromDVD() => db.Media.AsNoTracking().OfType<DVD>();
+
+    [EnableQuery]
     public IQueryable<EBook> GetFromEBook() => db.Media.AsNoTracking().OfType<EBook>();
 
     [EnableQuery]
@@ -110,15 +125,196 @@ public class MediaController(LibraryContext db) : ODataController
             ? publisher
             : NotFound();
 
-    /// <summary>Contained entities, reachable only through their audiobook.</summary>
+    /// <summary>
+    /// Contained entities, reachable only through their audiobook. A 404, not an empty collection, where
+    /// the casted entity does not exist or is not of the cast type - the cast segment is part of the
+    /// resource path, and a path that does not resolve is an error (OData V4.01 Part 2, §4.11).
+    /// </summary>
     [EnableQuery]
-    public IQueryable<AudiobookChapter> GetChaptersFromAudiobook([FromRoute] Guid key) =>
-        (db.Media.OfType<Audiobook>()
+    public ActionResult<IQueryable<AudiobookChapter>> GetChaptersFromAudiobook([FromRoute] Guid key) =>
+        db.Media
+            .OfType<Audiobook>()
             .Include(a => a.Chapters)
-            .FirstOrDefault(a => a.Id == key)?.Chapters ?? []).AsQueryable();
+            .FirstOrDefault(a => a.Id == key)?
+            .Chapters?
+            .AsQueryable() is { } chapters
+            ? Queried(chapters)
+            : NotFound();
+
+    // --- single entity through a type cast --------------------------------------------------------
+    //
+    // The conventional routes `~/Media({key})/Library.Catalog.{Type}` bind to actions named
+    // `{Method}{CastType}` - GetBook, PutBook, … - exactly as `~/Media/Library.Catalog.Book` binds to
+    // GetFromBook above. The body of every verb is one shared line: the entity is looked up as the cast
+    // type, so a medium that is not of it 404s rather than answering under the wrong type, and the verb
+    // then does what the same verb does on the uncast route.
+
+    [EnableQuery]
+    public SingleResult<Book> GetBook([FromRoute] Guid key) => GetCast<Book>(key);
+
+    [EnableQuery]
+    public SingleResult<PrintMedium> GetPrintMedium([FromRoute] Guid key) => GetCast<PrintMedium>(key);
+
+    [EnableQuery]
+    public SingleResult<Magazine> GetMagazine([FromRoute] Guid key) => GetCast<Magazine>(key);
+
+    [EnableQuery]
+    public SingleResult<TradeJournal> GetTradeJournal([FromRoute] Guid key) => GetCast<TradeJournal>(key);
+
+    [EnableQuery]
+    public SingleResult<AudioMedium> GetAudioMedium([FromRoute] Guid key) => GetCast<AudioMedium>(key);
+
+    [EnableQuery]
+    public SingleResult<Audiobook> GetAudiobook([FromRoute] Guid key) => GetCast<Audiobook>(key);
+
+    [EnableQuery]
+    public SingleResult<DVD> GetDVD([FromRoute] Guid key) => GetCast<DVD>(key);
+
+    [EnableQuery]
+    public SingleResult<EBook> GetEBook([FromRoute] Guid key) => GetCast<EBook>(key);
+
+    [EnableQuery]
+    public SingleResult<CollectorsItem> GetCollectorsItem([FromRoute] Guid key) => GetCast<CollectorsItem>(key);
+
+    /// <summary>
+    /// Replaces the entity's own state through the cast. The route already narrows to the concrete type,
+    /// so the payload needs no <c>@odata.type</c> discriminator - the same reason
+    /// <see cref="PublishersController.PatchBook"/> needs none.
+    /// </summary>
+    public IActionResult PutBook([FromRoute] Guid key, [FromBody] Book book) => PutCast<Book>(key, book);
+
+    public IActionResult PutPrintMedium([FromRoute] Guid key, [FromBody] PrintMedium printMedium) =>
+        PutCast<PrintMedium>(key, printMedium);
+
+    public IActionResult PutMagazine([FromRoute] Guid key, [FromBody] Magazine magazine) =>
+        PutCast<Magazine>(key, magazine);
+
+    public IActionResult PutTradeJournal([FromRoute] Guid key, [FromBody] TradeJournal tradeJournal) =>
+        PutCast<TradeJournal>(key, tradeJournal);
+
+    public IActionResult PutAudioMedium([FromRoute] Guid key, [FromBody] AudioMedium audioMedium) =>
+        PutCast<AudioMedium>(key, audioMedium);
+
+    public IActionResult PutAudiobook([FromRoute] Guid key, [FromBody] Audiobook audiobook) =>
+        PutCast<Audiobook>(key, audiobook);
+
+    public IActionResult PutDVD([FromRoute] Guid key, [FromBody] DVD dvd) => PutCast<DVD>(key, dvd);
+
+    public IActionResult PutEBook([FromRoute] Guid key, [FromBody] EBook eBook) => PutCast<EBook>(key, eBook);
+
+    public IActionResult PutCollectorsItem([FromRoute] Guid key, [FromBody] CollectorsItem collectorsItem) =>
+        PutCast<CollectorsItem>(key, collectorsItem);
+
+    public IActionResult PatchBook([FromRoute] Guid key, Delta<Book>? delta) => PatchCast<Book>(key, delta);
+
+    public IActionResult PatchPrintMedium([FromRoute] Guid key, Delta<PrintMedium>? delta) =>
+        PatchCast<PrintMedium>(key, delta);
+
+    public IActionResult PatchMagazine([FromRoute] Guid key, Delta<Magazine>? delta) =>
+        PatchCast<Magazine>(key, delta);
+
+    public IActionResult PatchTradeJournal([FromRoute] Guid key, Delta<TradeJournal>? delta) =>
+        PatchCast<TradeJournal>(key, delta);
+
+    public IActionResult PatchAudioMedium([FromRoute] Guid key, Delta<AudioMedium>? delta) =>
+        PatchCast<AudioMedium>(key, delta);
+
+    public IActionResult PatchAudiobook([FromRoute] Guid key, Delta<Audiobook>? delta) =>
+        PatchCast<Audiobook>(key, delta);
+
+    public IActionResult PatchDVD([FromRoute] Guid key, Delta<DVD>? delta) => PatchCast<DVD>(key, delta);
+
+    public IActionResult PatchEBook([FromRoute] Guid key, Delta<EBook>? delta) => PatchCast<EBook>(key, delta);
+
+    public IActionResult PatchCollectorsItem([FromRoute] Guid key, Delta<CollectorsItem>? delta) =>
+        PatchCast<CollectorsItem>(key, delta);
+
+    public IActionResult DeleteBook([FromRoute] Guid key) => DeleteCast<Book>(key);
+
+    public IActionResult DeletePrintMedium([FromRoute] Guid key) => DeleteCast<PrintMedium>(key);
+
+    public IActionResult DeleteMagazine([FromRoute] Guid key) => DeleteCast<Magazine>(key);
+
+    public IActionResult DeleteTradeJournal([FromRoute] Guid key) => DeleteCast<TradeJournal>(key);
+
+    public IActionResult DeleteAudioMedium([FromRoute] Guid key) => DeleteCast<AudioMedium>(key);
+
+    public IActionResult DeleteAudiobook([FromRoute] Guid key) => DeleteCast<Audiobook>(key);
+
+    public IActionResult DeleteDVD([FromRoute] Guid key) => DeleteCast<DVD>(key);
+
+    public IActionResult DeleteEBook([FromRoute] Guid key) => DeleteCast<EBook>(key);
+
+    public IActionResult DeleteCollectorsItem([FromRoute] Guid key) => DeleteCast<CollectorsItem>(key);
+
+    /// <summary>
+    /// The copies through the cast - the same collection <see cref="GetCopies"/> serves over the base
+    /// route, narrowed to the cast type. <c>Copies</c> is declared on the base <see cref="Medium"/> and
+    /// inherited by every subtype, so the cast narrows the source, not the navigation.
+    /// </summary>
+    [EnableQuery]
+    public ActionResult<IQueryable<Copy>> GetCopiesFromBook([FromRoute] Guid key) => GetCopiesFromCast<Book>(key);
+
+    public ActionResult<IQueryable<Copy>> GetCopiesFromPrintMedium([FromRoute] Guid key) =>
+        GetCopiesFromCast<PrintMedium>(key);
+
+    public ActionResult<IQueryable<Copy>> GetCopiesFromMagazine([FromRoute] Guid key) =>
+        GetCopiesFromCast<Magazine>(key);
+
+    public ActionResult<IQueryable<Copy>> GetCopiesFromTradeJournal([FromRoute] Guid key) =>
+        GetCopiesFromCast<TradeJournal>(key);
+
+    public ActionResult<IQueryable<Copy>> GetCopiesFromAudioMedium([FromRoute] Guid key) =>
+        GetCopiesFromCast<AudioMedium>(key);
+
+    public ActionResult<IQueryable<Copy>> GetCopiesFromAudiobook([FromRoute] Guid key) =>
+        GetCopiesFromCast<Audiobook>(key);
+
+    public ActionResult<IQueryable<Copy>> GetCopiesFromDVD([FromRoute] Guid key) => GetCopiesFromCast<DVD>(key);
+
+    public ActionResult<IQueryable<Copy>> GetCopiesFromEBook([FromRoute] Guid key) =>
+        GetCopiesFromCast<EBook>(key);
+
+    public ActionResult<IQueryable<Copy>> GetCopiesFromCollectorsItem([FromRoute] Guid key) =>
+        GetCopiesFromCast<CollectorsItem>(key);
+
+    private SingleResult<T> GetCast<T>(Guid key)
+        where T : Medium =>
+        SingleResult.Create(db.Media.AsNoTracking().OfType<T>().Where(m => m.Id == key));
 
     public IActionResult Post([FromBody] Medium medium)
     {
+        // As in <see cref="Patch"/>: without @odata.type the deserializer has no type to construct, and
+        // model binding hands the action a null instead of an error - a malformed request, answered 400
+        // rather than dereferenced into a 500.
+        if (medium is null)
+        {
+            return BadRequest(
+                "The request body could not be read as a Medium. The Media entity set is declared as the "
+                + "abstract type Library.Catalog.Medium, so the payload has to name the concrete type it "
+                + "creates, e.g. \"@odata.type\": \"#Library.Catalog.Book\".");
+        }
+
+        if (!TryCreate(medium, out var created))
+        {
+            return BadRequest("A navigation binding in the request body names an entity that does not exist.");
+        }
+
+        db.SaveChanges();
+        return Created(created);
+    }
+
+    /// <summary>
+    /// The create's own rules, shared with the delta upsert on a cast collection - see
+    /// <see cref="PatchFromBook"/>: the managed properties are the server's on insert, the key is
+    /// assigned where the client has no say, the binding is resolved before the graph is tracked, and a
+    /// nested copy becomes addressable as <c>/Copies</c>. Nothing is saved here: a delta set saves its
+    /// entries together.
+    /// </summary>
+    private bool TryCreate(Medium medium, out Medium created)
+    {
+        created = null!;
+
         // A computed property is the server's on insert as much as on update, so a value the client sent
         // goes no further than here - the delta filter does the same for PATCH, which binds no entity.
         medium.IgnoreManagedOnInsert(HttpContext.ODataFeature().Model);
@@ -132,7 +328,7 @@ public class MediaController(LibraryContext db) : ODataController
         // branch a nested copy is shelved at - has to be linked, and Add would insert it.
         if (!NavigationBinding.Resolve(db, Request, medium))
         {
-            return BadRequest("A navigation binding in the request body names an entity that does not exist.");
+            return false;
         }
 
         db.Media.Add(medium);
@@ -147,8 +343,8 @@ public class MediaController(LibraryContext db) : ODataController
             copy.Medium = medium;
         }
 
-        db.SaveChanges();
-        return Created(medium);
+        created = medium;
+        return true;
     }
 
     /// <summary>
@@ -182,6 +378,39 @@ public class MediaController(LibraryContext db) : ODataController
     }
 
     /// <summary>
+    /// Replaces the medium's own state, as <see cref="MembersController.Put"/> does for a member: the
+    /// scalar and complex properties come from the payload, the relationships and the properties the
+    /// client may not change keep what is stored. The payload names the concrete type, as every payload
+    /// on this abstract-typed set does - and a body the deserializer cannot construct arrives null, the
+    /// same malformed request <see cref="Patch"/> answers 400 to.
+    /// </summary>
+    public IActionResult Put([FromRoute] Guid key, [FromBody] Medium medium)
+    {
+        var existing = db.Media.FirstOrDefault(m => m.Id == key);
+        if (existing is null)
+        {
+            return NotFound();
+        }
+
+        if (medium is null)
+        {
+            return BadRequest(
+                "The request body could not be read as a Medium. The Media entity set is declared as the "
+                + "abstract type Library.Catalog.Medium, so the payload has to name the concrete type it "
+                + "updates, e.g. \"@odata.type\": \"#Library.Catalog.Book\".");
+        }
+
+        medium.Id = key;
+        // A PUT replaces the entity, but not the properties the client may not change: the spec exempts
+        // them from the reset an omission otherwise causes, so they keep the value that is stored.
+        medium.IgnoreManagedOnUpdate(existing, HttpContext.ODataFeature().Model);
+        db.Entry(existing).CurrentValues.SetValues(medium);
+
+        db.SaveChanges();
+        return Updated(existing);
+    }
+
+    /// <summary>
     /// Deletes a medium. Its copies go with it: the reference model's cascade is declared on the relational
     /// side too, so the database enforces it rather than the controller walking the graph.
     /// </summary>
@@ -197,6 +426,213 @@ public class MediaController(LibraryContext db) : ODataController
         db.SaveChanges();
         return NoContent();
     }
+
+    /// <summary>
+    /// The delta set on a cast collection (OData 4.01) - the cast version of
+    /// <see cref="MembersController.PatchCollection"/>: a mixed batch of upserts and deletions against the
+    /// derived-type view of the set in one request. An entry for an entity that is being removed arrives as
+    /// a <see cref="DeltaDeletedResource{T}"/>.
+    /// </summary>
+    public IActionResult PatchFromBook([FromBody] DeltaSet<Book> deltaSet) => PatchFromCast<Book>(deltaSet);
+
+    public IActionResult PatchFromPrintMedium([FromBody] DeltaSet<PrintMedium> deltaSet) =>
+        PatchFromCast<PrintMedium>(deltaSet);
+
+    public IActionResult PatchFromMagazine([FromBody] DeltaSet<Magazine> deltaSet) => PatchFromCast<Magazine>(deltaSet);
+
+    public IActionResult PatchFromTradeJournal([FromBody] DeltaSet<TradeJournal> deltaSet) =>
+        PatchFromCast<TradeJournal>(deltaSet);
+
+    public IActionResult PatchFromAudioMedium([FromBody] DeltaSet<AudioMedium> deltaSet) =>
+        PatchFromCast<AudioMedium>(deltaSet);
+
+    public IActionResult PatchFromAudiobook([FromBody] DeltaSet<Audiobook> deltaSet) =>
+        PatchFromCast<Audiobook>(deltaSet);
+
+    public IActionResult PatchFromDVD([FromBody] DeltaSet<DVD> deltaSet) => PatchFromCast<DVD>(deltaSet);
+
+    public IActionResult PatchFromEBook([FromBody] DeltaSet<EBook> deltaSet) => PatchFromCast<EBook>(deltaSet);
+
+    public IActionResult PatchFromCollectorsItem([FromBody] DeltaSet<CollectorsItem> deltaSet) =>
+        PatchFromCast<CollectorsItem>(deltaSet);
+
+    private IActionResult PutCast<T>(Guid key, T incoming)
+        where T : Medium
+    {
+        var existing = db.Media.OfType<T>().FirstOrDefault(m => m.Id == key);
+        if (existing is null)
+        {
+            return NotFound();
+        }
+
+        // As in <see cref="Put"/>: a body the deserializer cannot construct - on the abstract casts a
+        // payload that names no concrete subtype, on a concrete cast one that names a type the entity is
+        // not of - arrives null, and a malformed request is answered 400, never dereferenced into a 500.
+        if (incoming is null)
+        {
+            return BadRequest(
+                $"The request body could not be read as a {typeof(T).Name}. The payload has to name the "
+                + "concrete type the entity is, e.g. \"@odata.type\": \"#Library.Catalog.Book\".");
+        }
+
+        incoming.Id = key;
+        incoming.IgnoreManagedOnUpdate(existing, HttpContext.ODataFeature().Model);
+        db.Entry(existing).CurrentValues.SetValues(incoming);
+
+        db.SaveChanges();
+        return Updated(existing);
+    }
+
+    private IActionResult PatchCast<T>(Guid key, Delta<T>? delta)
+        where T : Medium
+    {
+        var existing = db.Media.OfType<T>().FirstOrDefault(m => m.Id == key);
+        if (existing is null)
+        {
+            return NotFound();
+        }
+
+        // As in <see cref="Patch"/>: a null delta means the deserializer could not decide what to build -
+        // certain when the cast type is abstract and the payload does not name a concrete subtype.
+        if (delta is null)
+        {
+            return BadRequest(
+                $"The request body could not be read as a {typeof(T).Name}. The Media entity set is declared "
+                + "as the abstract type Library.Catalog.Medium, so the payload has to name the concrete type "
+                + "it is patching, e.g. \"@odata.type\": \"#Library.Catalog.Book\".");
+        }
+
+        delta.Patch(existing);
+        db.SaveChanges();
+        return Updated(existing);
+    }
+
+    private IActionResult DeleteCast<T>(Guid key)
+        where T : Medium
+    {
+        var existing = db.Media.OfType<T>().FirstOrDefault(m => m.Id == key);
+        if (existing is null)
+        {
+            return NotFound();
+        }
+
+        db.Media.Remove(existing);
+        db.SaveChanges();
+        return NoContent();
+    }
+
+    /// <summary>
+    /// The copies through the cast: the same collection <see cref="GetCopies"/> serves over the base route,
+    /// narrowed to the cast type. A 404, not an empty collection, where the entity is not of the cast type -
+    /// the cast segment is part of the resource path (OData V4.01 Part 2, §4.11).
+    /// </summary>
+    private ActionResult<IQueryable<Copy>> GetCopiesFromCast<T>(Guid key)
+        where T : Medium =>
+        db.Media.OfType<T>().FirstOrDefault(m => m.Id == key) is { } medium
+            ? Queried(db.Copies.AsNoTracking().Where(c => c.MediumId == medium.Id))
+            : NotFound();
+
+    /// <summary>
+    /// Wraps a queryable in the <see cref="ActionResult{T}"/> the collection-cast routes return, so that a cast the entity
+    /// is not of can answer <c>NotFound()</c> instead of an empty collection - while <c>[EnableQuery]</c> still applies the
+    /// query options to the queryable on the way out. The <c>ActionResult</c> constructor has to be called explicitly: C# never
+    /// applies a user-defined conversion whose source type is an interface, and the queryable is one.
+    /// </summary>
+    private static ActionResult<IQueryable<T>> Queried<T>(IQueryable<T> queryable) => new(queryable);
+
+    private IActionResult PatchFromCast<T>(DeltaSet<T>? deltaSet)
+        where T : Medium
+    {
+        // A delta set the deserializer could not build arrives null - as a single delta does on the base
+        // route - the body was empty, or an entry names a type the set cannot hold: on the abstract casts
+        // that is an entry without any concrete subtype at all.
+        if (deltaSet is null)
+        {
+            return UnreadableDeltaSet<T>();
+        }
+
+        foreach (var item in deltaSet)
+        {
+            switch (item)
+            {
+                case DeltaDeletedResource<T> removed:
+                    if (removed.GetInstance() is null)
+                    {
+                        return UnreadableDeltaEntry<T>();
+                    }
+
+                    if (KeyOf(removed) is { } removedId
+                        && db.Media.OfType<T>().FirstOrDefault(m => m.Id == removedId) is { } toRemove)
+                    {
+                        db.Media.Remove(toRemove);
+                    }
+
+                    break;
+
+                case Delta<T> delta:
+                    if (delta.GetInstance() is not T instance)
+                    {
+                        return UnreadableDeltaEntry<T>();
+                    }
+
+                    var id = KeyOf(delta);
+                    if (id is not null && db.Media.OfType<T>().FirstOrDefault(m => m.Id == id) is { } existing)
+                    {
+                        delta.Patch(existing);
+                    }
+                    else
+                    {
+                        // Upsert: an entry whose key is unknown creates the entity, and a create is a create
+                        // even through the cast - it follows the same rules as POST /Media.
+                        if (!TryCreate(instance, out _))
+                        {
+                            return BadRequest("A navigation binding in the request body names an entity that does not exist.");
+                        }
+                    }
+
+                    break;
+            }
+        }
+
+        db.SaveChanges();
+        return Ok(deltaSet);
+    }
+
+    /// <summary>
+    /// The 400 a delta set the deserializer could not build at all gets: it arrives null, as a single delta
+    /// arrives null on the base route - the body was empty, or an entry names a type the set cannot hold,
+    /// on the abstract casts a concrete subtype. Dereferencing it used to answer 500 to what is a
+    /// malformed request.
+    /// </summary>
+    private IActionResult UnreadableDeltaSet<T>()
+        where T : Medium =>
+        BadRequest(
+            $"The request body could not be read as a delta set of type {typeof(T).Name}. A delta set "
+            + "carries its entries under the 'value' property, and where the cast type is abstract, every "
+            + "entry has to name a concrete subtype, e.g. \"@odata.type\": \"#Library.Catalog.Book\".");
+
+    /// <summary>
+    /// The 400 a delta entry that the deserializer could not materialize as the cast type gets. The
+    /// deserializer tends to refuse the whole set instead - which
+    /// <see cref="UnreadableDeltaSet{T}"/> answers - but an entry it kept and could not read as the cast
+    /// type must not be dereferenced into a 500.
+    /// </summary>
+    private IActionResult UnreadableDeltaEntry<T>()
+        where T : Medium =>
+        BadRequest(
+            $"An entry of the delta set could not be read as an entity of type {typeof(T).Name}. Its "
+            + "\"@odata.type\" has to name that type or a concrete subtype of it, e.g. "
+            + "\"@odata.type\": \"#Library.Catalog.Book\".");
+
+    /// <summary>
+    /// The key of a delta entry, or <c>null</c> where the entry carries no readable property at all. An
+    /// entry that simply omits the key still materializes it, with the CLR default - so a keyless entry
+    /// reads as <c>Guid.Empty</c>, which no stored entity matches, and the upsert decision is the database
+    /// lookup's to make.
+    /// </summary>
+    private static Guid? KeyOf<T>(Delta<T> delta)
+        where T : Medium =>
+        delta.TryGetPropertyValue(nameof(Medium.Id), out var value) ? (Guid)value : default;
 }
 
 public class CopiesController(LibraryContext db) : ODataController
@@ -529,8 +965,16 @@ public class MembersController(LibraryContext db) : ODataController
     /// request. Entries carrying <c>@removed</c> arrive as <see cref="DeltaDeletedResource{T}" />.
     /// </summary>
     [HttpPatch("odata/v4/library/Members")]
-    public IActionResult PatchCollection([FromBody] DeltaSet<Member> deltaSet)
+    public IActionResult PatchCollection([FromBody] DeltaSet<Member>? deltaSet)
     {
+        // A delta set the deserializer could not build - an empty body is one such case - arrives null, as a
+        // single delta arrives null on an abstract-typed set. Dereferencing it used to answer 500 to what
+        // is a malformed request.
+        if (deltaSet is null)
+        {
+            return BadRequest("The request body could not be read as a delta set of type Member.");
+        }
+
         foreach (var item in deltaSet)
         {
             switch (item)

@@ -99,6 +99,59 @@ GET {{host}}/Media/Library.Catalog.EBook
 ### 200
 GET {{host}}/Media/Library.Catalog.CollectorsItem
 
+### 200 - the five further casts. The two abstract intermediates narrow to
+### their concrete subtypes - 3 rows here
+GET {{host}}/Media/Library.Catalog.PrintMedium
+
+### 200 - 2 rows: the magazine and its trade journal
+GET {{host}}/Media/Library.Catalog.Magazine
+
+### 200
+GET {{host}}/Media/Library.Catalog.TradeJournal
+
+### 200 - 2 rows: the audiobook and the DVD
+GET {{host}}/Media/Library.Catalog.AudioMedium
+
+### 200
+GET {{host}}/Media/Library.Catalog.DVD
+
+###############################################################################
+# Single entity through a type cast
+###############################################################################
+
+### 200 - the same segment after the key re-types the one entity it addresses
+GET {{host}}/Media({{book}})/Library.Catalog.Book
+
+### 200 - through the abstract intermediate
+GET {{host}}/Media({{book}})/Library.Catalog.PrintMedium
+
+### 200
+GET {{host}}/Media({{magazine}})/Library.Catalog.Magazine
+
+### 200
+GET {{host}}/Media({{tradeJournal}})/Library.Catalog.TradeJournal
+
+### 200
+GET {{host}}/Media({{audiobook}})/Library.Catalog.Audiobook
+
+### 200
+GET {{host}}/Media({{audiobook}})/Library.Catalog.AudioMedium
+
+### 200
+GET {{host}}/Media({{dvd}})/Library.Catalog.DVD
+
+### 200
+GET {{host}}/Media({{ebook}})/Library.Catalog.EBook
+
+### 200
+GET {{host}}/Media({{collectorsItem}})/Library.Catalog.CollectorsItem
+
+### 404 - the entity is not of the cast type: the magazine, cast as Book
+GET {{host}}/Media({{magazine}})/Library.Catalog.Book
+
+### 404 - unknown key
+GET {{host}}/Media(00000000-0000-0000-0000-000000000000)/Library.Catalog.Book
+
 ###############################################################################
 # Alternate key (Core.AlternateKeys on PrintMedium/ISBN)
 ###############################################################################
@@ -116,6 +169,36 @@ GET {{host}}/Media(ISBN='9783518188002')
 
 ### 200 - collection-valued
 GET {{host}}/Media({{book}})/Copies
+
+### 200 - the same collection through the type cast. Copies is declared on
+### the base Medium and inherited by every subtype, so the cast narrows the
+### source, not the navigation
+GET {{host}}/Media({{book}})/Library.Catalog.Book/Copies
+
+### 200 - through the abstract intermediate
+GET {{host}}/Media({{book}})/Library.Catalog.PrintMedium/Copies
+
+### 200 - the rest of the hierarchy, same shape. Only the book and the DVD
+### have copies in the seed; the others answer empty
+GET {{host}}/Media({{magazine}})/Library.Catalog.Magazine/Copies
+
+### 200
+GET {{host}}/Media({{tradeJournal}})/Library.Catalog.TradeJournal/Copies
+
+### 200
+GET {{host}}/Media({{audiobook}})/Library.Catalog.Audiobook/Copies
+
+### 200
+GET {{host}}/Media({{ebook}})/Library.Catalog.EBook/Copies
+
+### 200
+GET {{host}}/Media({{dvd}})/Library.Catalog.DVD/Copies
+
+### 200
+GET {{host}}/Media({{collectorsItem}})/Library.Catalog.CollectorsItem/Copies
+
+### 404 - the navigation behind a cast the entity is not of
+GET {{host}}/Media({{dvd}})/Library.Catalog.Book/Copies
 
 ### 200 - a single copy reached through its medium, by its own composite key -
 ### the same resource /Copies(...) addresses directly, over a different route
@@ -167,6 +250,14 @@ GET {{host}}/Publishers(1)/Books({{book}})/Copies(MediumId={{book}},InventoryNum
 
 ### 200 - through the type cast, since Chapters is declared on Audiobook
 GET {{host}}/Media({{audiobook}})/Library.Catalog.Audiobook/Chapters
+
+### 404 - a cast the entity is not of: the cast segment is part of the
+### resource path, and a path that does not resolve is an error, not an
+### empty collection (OData V4.01 Part 2, §4.11)
+GET {{host}}/Media({{book}})/Library.Catalog.Audiobook/Chapters
+
+### 404 - and a parent that does not exist, cast or not
+GET {{host}}/Media(00000000-0000-0000-0000-000000000000)/Library.Catalog.Audiobook/Chapters
 
 ### 404 - without the cast
 GET {{host}}/Media({{audiobook}})/Chapters

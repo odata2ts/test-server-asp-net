@@ -446,6 +446,16 @@ Three things stopped being decoration:
 - **`$batch` sub-requests each get their own unit of work**, since the `DbContext` is scoped. A `PATCH` in
   one sub-request is visible to a `GET` in the next, and each commits on its own.
 
+### The abstract intermediate levels are declared, though no row is one of them
+
+Every concrete type has a configuration block of its own - keys, navigations, converters - and the model
+contains those types plus the subtypes of the configured ones. The two abstract intermediate
+levels are no row's type and have nothing to configure, so they never come along on their own. A level
+the model does not name is not in the hierarchy: `OfType<AudioMedium>()` - the query the
+`/Media/Library.Catalog.AudioMedium` type cast and the single-entity casts on that level compile to -
+named a type EF did not know and failed to translate with a 400 at query time. A bare `model.Entity<T>()`
+per intermediate puts its level back, and with it every `OfType` over that level.
+
 ## Query
 
 ### `Edm.Date` and `Edm.TimeOfDay` are not compared as values
@@ -615,6 +625,49 @@ navigation property, but nothing registers them anywhere else. Left at that, the
 `Members(3)/Loans` while carrying an all-zero key and being absent from `/Loans` - an inconsistent state,
 not a partial one, and the request still answers 201. The controller therefore assigns keys and registers
 nested entities in their own sets explicitly.
+
+### Type casts behind the key and the collection
+
+`GET /Media({key})/Library.Catalog.Book` is not a different resource from `GET /Media({key})`: the cast
+segment re-types the one entity it addresses, and the verb then does what the same verb does on the
+uncast route. The conventional routes bind it to actions named `{Method}{CastType}` - `GetBook`,
+`PutBook`, … - and the navigation on top of the cast to `{Method}{Navigation}From{CastType}`, so
+`GetCopiesFromBook` serves `/Media({key})/Library.Catalog.Book/Copies`. Every verb shares one body: the
+entity is looked up **as the cast type**, so a medium that is not of it answers 404 rather than answering
+under the wrong type. That is the spec's shape, not a convenience: the cast segment is part of the
+resource path, and a path that does not resolve is an error, not an empty result (OData V4.01 Part 2,
+§4.11) - which is why the contained collection does the same, `GetChaptersFromAudiobook` 404s where the
+audiobook is missing or the medium is not one, and a navigation behind a cast that does not hold 404s
+with it.
+
+Two library behaviours decide how the 404 gets out. A `SingleResult<T>` or `IQueryable<T>` return type
+passes through `[EnableQuery]` with its query options applied, so a cast that does not hold is simply a
+query over `OfType<T>()` that matches nothing. A collection route that may 404 returns
+`ActionResult<IQueryable<T>>` instead, and there is a C# corner in the way: `ActionResult<TValue>`
+declares an implicit conversion from `TValue`, but C# never applies a user-defined conversion whose
+source type is an interface, and the queryable is one - it would apply to a concrete entity and fail on
+the query. `Queried<T>` calls the constructor explicitly, and `[EnableQuery]` unwraps the `ActionResult`
+on the way out, applies the query options to the wrapped queryable, and lets a non-success result through
+untouched, so the 404 and the query options coexist.
+
+`PUT` on the base type and on the cast follows Protocol 11.4.3: the scalar and complex properties come
+from the payload, the relationships and the properties the client may not change keep what is stored.
+The managed properties are exempt from the reset an omission otherwise causes - the same
+`IgnoreManagedOnUpdate` the `PATCH` filter uses - and on the cast the payload needs no `@odata.type`
+where the route already names a concrete type. Where it does not - on the base route, where the set is
+declared abstract, and on the abstract intermediates - the payload has to name the concrete type the
+entity is, and a body the deserializer cannot construct arrives null: `POST`, `PUT` and `PATCH` all
+answer it 400, never dereferencing it into a 500.
+
+The delta set on a cast collection (`PATCH /Media/Library.Catalog.Book`) is the cast version of the
+delta set on the base set: update, removal and upsert in one request, the upsert on the create's own
+rules - the key is assigned, the binding is resolved, a nested copy becomes addressable as `/Copies` -
+and the delta response names the cast, as the route did. Two nulls arrive from the deserializer, and
+both answer 400 rather than 500: a set it could not build at all - the body was empty, or an entry names
+a type the set cannot hold, on the abstract casts a concrete subtype - arrives as a null `DeltaSet<T>`,
+and an entry the cast cannot hold fails the same check: a deletion whose instance came back null, or an
+update the deserializer built as a type the entity is not of. Unguarded, either dereference answers 500
+to a malformed request.
 
 ### Media entity streams
 

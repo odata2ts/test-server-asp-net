@@ -149,19 +149,5 @@ GET {{host}}/Media/Library.Catalog.Audiobook?$filter=totalseconds(Duration) gt 1
 ### and the chapter's stream are, see read.http and streams.http.
 GET {{host}}/Media({{audiobook}})/Library.Catalog.Audiobook/Chapters(1)
 
-### 200 with an empty collection, where the spec wants 404: the contained
-### collection never asks whether its parent exists. The action behind it ends
-### in `?.Chapters ?? []`, so a missing audiobook becomes an empty result
-### rather than a missing resource. A one-line fix, kept as an observed fact
-### until it is made - the container image is consumed by other suites.
-GET {{host}}/Media(00000000-0000-0000-0000-000000000000)/Library.Catalog.Audiobook/Chapters
-
-### 404 - that same parent, addressed directly, is correctly missing
-GET {{host}}/Media(00000000-0000-0000-0000-000000000000)
-
-### 200, empty - and the medium need not even be an audiobook: this is the
-### book, cast to Audiobook
-GET {{host}}/Media({{book}})/Library.Catalog.Audiobook/Chapters
-
 ### 404 - $entity?$id= is not routed
 GET {{host}}/$entity?$id=Media({{book}})

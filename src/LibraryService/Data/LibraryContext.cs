@@ -98,8 +98,11 @@ public sealed class LibraryContext(DbContextOptions<LibraryContext> options) : D
         // The two abstract intermediate levels have to be registered even though no row is ever one of
         // them. EF would otherwise hang Book and Magazine straight off Medium, and `OfType<PrintMedium>()`
         // - which is what the alternate-key route and the `/Media/Library.Catalog.PrintMedium` type cast
-        // compile to - would name a type the model does not know and fail to translate.
+        // compile to - would name a type the model does not know and fail to translate. The same is true
+        // of `OfType<AudioMedium>()` for the audio branch: it is the query the type-cast routes on that
+        // level compile to.
         model.Entity<PrintMedium>();
+        model.Entity<AudioMedium>();
 
         medium.HasDiscriminator<string>("MediumKind")
             .HasValue<Book>(nameof(Book))

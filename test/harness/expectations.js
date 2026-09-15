@@ -93,6 +93,40 @@ module.exports = {
         }
       },
     },
+    {
+      request: "GET {{host}}/Media/Library.Catalog.PrintMedium",
+      // The abstract intermediate narrows to its concrete subtypes - and nothing else.
+      assert: ({ body, assert }) => {
+        assert.equal(body.value.length, 3);
+        for (const medium of body.value) {
+          assert.match(medium["@odata.type"], /^#Library\.Catalog\.(Book|Magazine|TradeJournal)$/);
+        }
+      },
+    },
+    {
+      request: "GET {{host}}/Media({{book}})/Library.Catalog.Book",
+      // The single-entity cast serves the one entity re-typed as the derived type - the same type the
+      // cast declares, so the payload needs no @odata.type.
+      assert: ({ body, assert }) => {
+        assert.equal(body["@odata.type"], undefined);
+        assert.equal(body.Title, "Der Prozess");
+      },
+    },
+    {
+      request: "GET {{host}}/Media({{book}})/Library.Catalog.PrintMedium",
+      // Through the abstract intermediate the cast type no longer names the entity's own type, so the
+      // payload carries the discriminator.
+      assert: ({ body, assert }) => {
+        assert.equal(body["@odata.type"], "#Library.Catalog.Book");
+        assert.equal(body.Title, "Der Prozess");
+      },
+    },
+    {
+      request: "GET {{host}}/Media({{book}})/Library.Catalog.Book/Copies",
+      assert: ({ body, assert }) => {
+        assert.equal(body.value.length, 2);
+      },
+    },
   ],
 
   "crud.http": [
@@ -110,6 +144,68 @@ module.exports = {
             [2, "Suburban Branch"],
           ],
         );
+      },
+    },
+    {
+      request: "GET {{host}}/Media({{book}})?$select=Title,PopularityScore",
+      // Read right after the base PUT. A PUT that silently stores the computed PopularityScore the
+      // payload sent, or that loses the copies, answers 204 all the same.
+      assert: ({ body, assert }) => {
+        assert.equal(body.Title, "Der Prozess (PUT)");
+        assert.equal(body.PopularityScore, 9.1);
+      },
+    },
+    {
+      request: "GET {{host}}/Media({{book}})/Copies?$count=true",
+      assert: ({ body, assert }) => {
+        assert.equal(body["@odata.count"], 2);
+      },
+    },
+    {
+      request: "GET {{host}}/Media({{book}})/Library.Catalog.Book?$select=Title",
+      nth: 1,
+      // Read back through the cast that the PUT used. A PUT that answered 204 without storing the
+      // replacement would show here.
+      assert: ({ body, assert }) => {
+        assert.equal(body.Title, "Der Prozess (PUT durch Cast)");
+      },
+    },
+    {
+      request: "GET {{host}}/Media({{book}})/Library.Catalog.Book?$select=Title",
+      nth: 2,
+      // Read back through the cast that the delta set patched.
+      assert: ({ body, assert }) => {
+        assert.equal(body.Title, "Der Prozess (Delta)");
+      },
+    },
+    {
+      request: "GET {{host}}/Media({{book}})/Library.Catalog.Book?$select=PageCount",
+      assert: ({ body, assert }) => {
+        assert.equal(body.PageCount, 350);
+      },
+    },
+    {
+      request: "GET {{host}}/Media({{magazine}})?$select=Title",
+      // Read back after the three writes the cast refused: PUT, PATCH and DELETE all 404'd, because the
+      // magazine is not a Book. Any of them leaking through would show up here.
+      assert: ({ body, assert }) => {
+        assert.equal(body.Title, "Stadtmagazin");
+      },
+    },
+    {
+      request: "GET {{host}}/Media({{book}})/Library.Catalog.PrintMedium?$select=Title",
+      // Read back through the abstract intermediate the PUT used. The payload named the concrete Book,
+      // so the replace reached it through the cast.
+      assert: ({ body, assert }) => {
+        assert.equal(body.Title, "Der Prozess (PUT über Zwischenstufe)");
+      },
+    },
+    {
+      request: "GET {{host}}/Media/Library.Catalog.Book?$count=true",
+      // The delta set's upsert went through the cast and landed in the same set - alongside the seed
+      // book and the two books this file created earlier.
+      assert: ({ body, assert }) => {
+        assert.equal(body["@odata.count"], 4);
       },
     },
   ],
