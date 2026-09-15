@@ -58,16 +58,13 @@ The **protocol and operation surface is reproduced completely**: all 20 entity t
 including both overload pairs, which is the part most implementations lose. Every query option the
 reference model reaches translates to SQL.
 
-What is **not** covered comes down to seven things, six of them not this implementation's choice: three
+What is **not** covered comes down to six things, none of them this implementation's choice: three
 pieces of CSDL the model builder has no API for (`TypeDefinition`, `Unicode`, and every `OnDelete` action
 except `Cascade`), the `geo.*` functions and `$filter`/`$orderby` over an open type's dynamic properties
 (both the storage layer's price), and the library's projection, which both fails to truncate a
 `$compute=date(...)` and breaks outright on a date-part function over a nullable property.
 
-Only one is this implementation's own: a contained collection answers 200 with an empty result for a
-parent that does not exist, where the spec wants 404.
-
-The eighth is a choice, and the only place this server knowingly departs from the spec: **it accepts UTC
+The seventh is a choice, and the only place this server knowingly departs from the spec: **it accepts UTC
 timestamps only**. `Edm.DateTimeOffset` permits any offset, and a fully conformant server round-trips
 `+02:00` unchanged; this one answers **400** with a message naming the property and the UTC value to send
 instead. The reasoning is that UTC on the wire and UTC at rest is best practice - it is what the entire
@@ -79,7 +76,7 @@ already speaks UTC never meets this.
 
 | Feature                                             | result | out-of-the-box | impl | Notes |
 | --------------------------------------------------- | :----: | :------------: | :--: | ----- |
-| Entity types, three-level inheritance, abstract types | ✅ | ✔ |   | `Medium` → `PrintMedium` → `Magazine` → `TradeJournal`, abstract flags intact |
+| Entity types, three-level inheritance, abstract types | ✅ | ✔ | ✔ | `Medium` → `PrintMedium` → `Magazine` → `TradeJournal`, abstract flags intact - but the abstract intermediate levels only materialise in a query if the model builder is told about them (`model.Entity<T>()`); unregistered, `OfType<T>()` does not translate |
 | Keys, composite keys                                | ✅ | ✔ |   | all keys caller-assigned |
 | Complex types incl. abstract base                   | ✅ | ✔ |   |       |
 | Enums incl. flags and non-ASCII members             | ✅ | ✔ | ✔ | need an explicit `EnumType<T>()` registration to survive the namespace fix-up |
@@ -87,7 +84,7 @@ already speaks UTC never meets this.
 | Navigation properties, referential constraints, `OnDelete="Cascade"` | ✅ | ✔ | ✔ | cascade is real, not just declared; all four are taken from EF's `DeleteBehavior` |
 | `OnDelete` actions other than `Cascade`             | ❌ |   |   | CSDL has `SetNull`, `SetDefault` and `None`, and this model sets null five times - but `NavigationPropertyConfiguration` exposes `CascadeOnDelete()` and nothing else, so the behaviour happens and cannot be declared |
 | `Partner` on both sides (6 attributes)              | ✅ | ✔ |   | not inferred by convention; the three-argument `HasRequired`/`HasOptional` overload sets it |
-| Containment                                         | ⚠️ | ✔ | ✔ | addressable through the type cast, as the spec requires - but the collection answers 200 with an empty result for a parent that does not exist, where the spec wants 404. This implementation's action ends in `?.Chapters ?? []` |
+| Containment                                         | ✅ | ✔ | ✔ | addressable through the type cast, as the spec requires; a path that does not resolve - a missing parent - answers 404, not an empty collection (Part 2, §4.11) |
 | Media entities and stream properties (`HasStream`)  | ✅ | ✔ |   | serving them is a separate row below |
 | Open type, `Edm.Untyped`                            | ✅ | ✔ |   | dynamic properties round-trip, `@odata.type` annotated in the payload |
 | Operations: 29 declarations (15 functions, 14 actions) | ✅ | ✔ | ✔ | 13 function names, two of them overloaded - both pairs survive; one action serves the two `Search` overloads |
@@ -112,18 +109,20 @@ as GeoJSON including `"crs": {"name": "EPSG:4326"}`.
 | Feature                                             | result | out-of-the-box | impl | Notes |
 | --------------------------------------------------- | :----: | :------------: | :--: | ----- |
 | Service document, `$metadata`                       | ✅ | ✔ |   |       |
-| CRUD on entity sets                                 | ✅ | ✔ |   | 201 / 204 / 204 |
+| CRUD on entity sets                                 | ✅ | ✔ | ✔ | 201 / 204 / 204, plus `PUT` on the base type: replaces the state, keeps the relationships, ignores the managed properties (Protocol 11.4.3) |
 | Addressing by composite key                         | ✅ | ✔ |   | duplicate key refused with 409 |
 | `POST` to a type with a constrained navigation (`/Copies`) | ✅ |   | ✔ | the deserializer rejects such a body outright; the payload is parsed by hand |
-| `PATCH` on a set whose declared type is abstract    | ✅ | ✔ | ✔ | `@odata.type` required by the spec; without it the library hands the action a null delta and no error - the 400 is ours |
+| `PATCH` on a set whose declared type is abstract    | ✅ | ✔ | ✔ | `@odata.type` required by the spec; without it the library hands the action a null delta and no error - the 400 is ours. The same holds on the type-cast sets: an entry that names no concrete subtype of an abstract cast cannot be deserialized at all, so the whole set arrives null and answers 400 rather than 500. `POST` and `PUT` on this abstract-typed set are handed the same null body for the same reason, and answer it 400 as well |
 | Singleton                                           | ✅ | ✔ |   |       |
-| Type-cast segments                                  | ✅ | ✔ |   |       |
+| Type-cast segment on a set                          | ✅ | ✔ |   | the abstract intermediates narrow to their concrete subtypes - 3 rows through `PrintMedium`, 2 through `Magazine` and `AudioMedium` |
+| Type-cast segment on a single entity, all verbs     | ✅ |   | ✔ | `GET`, `PUT`, `PATCH` and `DELETE` behind the cast; a cast the entity is not of answers 404 - the query runs over `OfType<T>()`, so a wrong cast is a missing resource, not an empty one (Part 2, §4.11). On the abstract casts the payload has to name the concrete type; a body the deserializer cannot construct - untyped, or a type the entity is not of - arrives null and answers 400 rather than 500 |
+| Navigation after a type cast                        | ✅ |   | ✔ | `/Media({id})/Library.Catalog.Book/Copies`; the cast re-types the source and the navigation is served on it, 404 when the cast does not hold |
 | Media entity streams, all three positions           | ✅ |   | ✔ | entity content, contained entity, stream property; empty content answers 204, not 404 |
 | `$ref`, both cardinalities                          | ✅ |   | ✔ | verbs differ per cardinality as the spec requires |
 | Deep insert                                         | ✅ | ✔ | ✔ | the library leaves the children keyless and outside their own set; the controller registers them |
 | Missing required action parameter answers 400       | ✅ |   | ✔ | a body carrying none of the declared parameters binds to a *null* `ODataActionParameters`; unguarded that is a 500 |
 | `@odata.bind` and `{"@id": …}`, incl. binding to null | ✅ |   | ✔ | routing a binding through `Delta<T>` corrupts the store - read from the raw body instead; on a create the bound stub is `Add`ed with the graph and has to be swapped for the stored entity first |
-| Delta payloads (OData 4.01)                         | ✅ | ✔ |   | update, removal and upsert in one request, delta response |
+| Delta payloads (OData 4.01)                         | ✅ | ✔ |   | update, removal and upsert in one request, delta response - on the base sets and, through the type cast, on the derived ones |
 | `$batch` (JSON)                                     | ✅ | ✔ |   | each sub-request its own unit of work |
 | `$batch` request references `$<id>` in the URL      | ✅ | ✔ |   | valid in the first URL segment only; the library rewrites it against the previous sub-response's `Location` and validates it against the referring request's `dependsOn` at parse |
 | `$batch` request references in `@odata.bind` / `@id` | ✅ | ✔ |   | the same `$<id>` may name the previous sub-response from inside a sub-request's payload |

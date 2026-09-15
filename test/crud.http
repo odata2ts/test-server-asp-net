@@ -12,6 +12,8 @@
 
 @host = http://localhost:5091/odata/v4/library
 @book = 11111111-1111-1111-1111-111111111111
+@magazine = 44444444-4444-4444-4444-444444444444
+@tradeJournal = 55555555-5555-5555-5555-555555555555
 @audiobook = 22222222-2222-2222-2222-222222222222
 @dvd = 66666666-6666-6666-6666-666666666666
 @loan = 88888888-8888-8888-8888-888888888888
@@ -252,6 +254,13 @@ Content-Type: application/json
 ### 200 - members 1, 2, 4 and 99; 3 is gone
 GET {{host}}/Members?$select=Id,Name
 
+### 400 - and an empty body is not a delta set: the deserializer hands the
+### binding null, which is a malformed request, not a server fault
+PATCH {{host}}/Members
+Content-Type: application/json
+
+{}
+
 ###############################################################################
 # Binding an existing entity: @odata.bind (4.0) and {"@id"} (4.01)
 #
@@ -473,3 +482,183 @@ DELETE {{host}}/Copies(MediumId={{book}},InventoryNumber=97)
 ### 204
 DELETE {{host}}/Copies(MediumId={{book}},InventoryNumber=97)
 If-Match: *
+
+###############################################################################
+# PUT, and the single-entity type cast
+###############################################################################
+
+### 204 - PUT replaces the medium's own state; its copies and links are
+### untouched. The payload names the concrete type, as every payload on this
+### abstract-typed set does, and the computed PopularityScore is ignored
+PUT {{host}}/Media({{book}})
+Content-Type: application/json
+
+{
+  "@odata.type": "#Library.Catalog.Book",
+  "Title": "Der Prozess (PUT)",
+  "Language": "de",
+  "ISBN": "9783518188002",
+  "PageCount": 320,
+  "AgeRating": 16,
+  "PopularityScore": 0.1
+}
+
+### 200 - the replacement is stored, PopularityScore keeps its value
+GET {{host}}/Media({{book}})?$select=Title,PopularityScore
+
+### 200 - the two copies are still there
+GET {{host}}/Media({{book}})/Copies?$count=true
+
+### 400 - and without @odata.type on the base route too: the deserializer has
+### no type to construct, and the body arrives null. A malformed request is
+### answered 400, never dereferenced into a 500
+PUT {{host}}/Media({{book}})
+Content-Type: application/json
+
+{ "Title": "Ohne Typ" }
+
+### 204 - the same replace through the type cast. The route already narrows
+### to the concrete Book, so the payload needs no @odata.type
+PUT {{host}}/Media({{book}})/Library.Catalog.Book
+Content-Type: application/json
+
+{ "Title": "Der Prozess (PUT durch Cast)", "Language": "de", "ISBN": "9783518188002", "PageCount": 320, "AgeRating": 16 }
+
+### 200 - read back through the same route
+GET {{host}}/Media({{book}})/Library.Catalog.Book?$select=Title
+
+### 404 - PUT through a cast the entity is not of
+PUT {{host}}/Media({{magazine}})/Library.Catalog.Book
+Content-Type: application/json
+
+{ "Title": "Nicht ein Buch", "PageCount": 1 }
+
+### 404 - and PATCH through the same cast
+PATCH {{host}}/Media({{magazine}})/Library.Catalog.Book
+Content-Type: application/json
+
+{ "Title": "Nicht ein Buch" }
+
+### 404 - and DELETE through it
+DELETE {{host}}/Media({{magazine}})/Library.Catalog.Book
+
+### 200 - the magazine is still what it was: none of the refused writes reached it
+GET {{host}}/Media({{magazine}})?$select=Title
+
+### 204 - PATCH through the cast; no @odata.type either
+PATCH {{host}}/Media({{book}})/Library.Catalog.Book
+Content-Type: application/json
+
+{ "PageCount": 350 }
+
+### 200 - and PageCount is 350
+GET {{host}}/Media({{book}})/Library.Catalog.Book?$select=PageCount
+
+### 400 - PATCH through the abstract intermediate without @odata.type: the
+### deserializer has no type to construct
+PATCH {{host}}/Media({{book}})/Library.Catalog.PrintMedium
+Content-Type: application/json
+
+{ "ISBN": "9783518188002" }
+
+### 204 - with @odata.type, the patch reaches the concrete entity
+PATCH {{host}}/Media({{book}})/Library.Catalog.PrintMedium
+Content-Type: application/json
+
+{ "@odata.type": "#Library.Catalog.Book", "Title": "Der Prozess (Print-Medium)" }
+
+### 400 - PUT through the abstract intermediate without @odata.type: the
+### deserializer has no type to construct, and the body arrives null
+PUT {{host}}/Media({{book}})/Library.Catalog.PrintMedium
+Content-Type: application/json
+
+{ "ISBN": "9783518188002" }
+
+### 204 - with @odata.type, the replace reaches the concrete entity
+PUT {{host}}/Media({{book}})/Library.Catalog.PrintMedium
+Content-Type: application/json
+
+{
+  "@odata.type": "#Library.Catalog.Book",
+  "Title": "Der Prozess (PUT über Zwischenstufe)",
+  "Language": "de",
+  "ISBN": "9783518188002",
+  "PageCount": 320,
+  "AgeRating": 16
+}
+
+### 200 - read back through the abstract intermediate
+GET {{host}}/Media({{book}})/Library.Catalog.PrintMedium?$select=Title
+
+### 204 - DELETE through the cast
+DELETE {{host}}/Media({{audiobook}})/Library.Catalog.Audiobook
+
+### 404
+GET {{host}}/Media({{audiobook}})
+
+### 404 - deleting twice
+DELETE {{host}}/Media({{audiobook}})/Library.Catalog.Audiobook
+
+### 200 - the delta payload on the cast collection: one update. @context names
+### the cast, as the route did
+PATCH {{host}}/Media/Library.Catalog.Book
+Content-Type: application/json
+
+{
+  "@context": "{{host}}/$metadata#Media/Library.Catalog.Book/$delta",
+  "value": [
+    { "Id": "{{book}}", "Title": "Der Prozess (Delta)" }
+  ]
+}
+
+### 200 - and Title is "Der Prozess (Delta)"
+GET {{host}}/Media({{book}})/Library.Catalog.Book?$select=Title
+
+### 200 - an entry whose key is unknown is an upsert through the cast, on the
+### create's own rules: the key is server-assigned
+PATCH {{host}}/Media/Library.Catalog.Book
+Content-Type: application/json
+
+{
+  "@context": "{{host}}/$metadata#Media/Library.Catalog.Book/$delta",
+  "value": [
+    { "Title": "Delta Upsert", "Language": "de", "ISBN": "9780000000100", "PageCount": 42, "AgeRating": 0 }
+  ]
+}
+
+### 200 - the set gained a row: the seed book, the two this file created,
+### and the upsert
+GET {{host}}/Media/Library.Catalog.Book?$count=true
+
+### 200 - and an entry with @removed deletes through the cast
+PATCH {{host}}/Media/Library.Catalog.Magazine
+Content-Type: application/json
+
+{
+  "@context": "{{host}}/$metadata#Media/Library.Catalog.Magazine/$delta",
+  "value": [
+    { "@removed": { "reason": "deleted" }, "Id": "{{tradeJournal}}" }
+  ]
+}
+
+### 404 - the trade journal is gone
+GET {{host}}/Media({{tradeJournal}})
+
+### 400 - an entry that names no concrete subtype on the abstract
+### intermediate: the deserializer cannot build it, and a 400 - not a 500 -
+### is the honest answer
+PATCH {{host}}/Media/Library.Catalog.PrintMedium
+Content-Type: application/json
+
+{
+  "@context": "{{host}}/$metadata#Media/Library.Catalog.PrintMedium/$delta",
+  "value": [
+    { "ISBN": "9783518188002" }
+  ]
+}
+
+### 400 - an empty body is not a delta set either
+PATCH {{host}}/Media/Library.Catalog.Book
+Content-Type: application/json
+
+{}
